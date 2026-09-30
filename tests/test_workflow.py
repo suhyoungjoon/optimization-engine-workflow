@@ -120,3 +120,39 @@ def test_unexpected_error_is_recorded_as_failed(ws):
     [run] = RunStore(ws["runs"]).list()
     assert run["status"] == "failed" and run["history"][-1]["reason"] == "analysis: RuntimeError: api down"
     assert "traceback" in run["error"]
+
+
+def test_setup_errors_are_recorded_as_failed(ws):
+    del ws["settings"]["llm"]["propose_max_calls"]
+    with pytest.raises(KeyError):
+        _run(ws)
+    ws["params"].write_text("version: [", encoding="utf-8")
+    with pytest.raises(yaml.YAMLError):
+        _run(ws)
+    runs = RunStore(ws["runs"]).list()
+    assert [r["status"] for r in runs] == ["failed", "failed"]
+    assert all(r["history"][-1]["reason"].startswith("setup:") for r in runs)
+
+
+def test_approve_is_serialized_by_params_lock(ws):
+    run = _run(ws)
+    lock = ws["params"].with_name(ws["params"].name + ".lock")
+    lock.touch()                     # 다른 승인이 진행 중인 상황
+    with pytest.raises(runner.WorkflowError, match="진행 중"):
+        runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=run["run_id"])
+    with pytest.raises(runner.WorkflowError, match="진행 중"):
+        runner.reject(runs_dir=ws["runs"], run_id=run["run_id"], reason="x")
+    assert _version(ws) == 1
+    lock.unlink()
+    runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=run["run_id"])
+    assert _version(ws) == 2 and not lock.exists()
+
+
+@pytest.mark.parametrize("bad_id", ["..", "../outside", "/tmp/outside", "a/../../outside"])
+def test_run_id_cannot_escape_runs_dir(ws, tmp_path, bad_id):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "run.json").write_text('{"status": "awaiting_approval"}', encoding="utf-8")
+    ws["runs"].mkdir()
+    with pytest.raises(runner.WorkflowError, match="찾을 수 없음"):
+        runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=bad_id)

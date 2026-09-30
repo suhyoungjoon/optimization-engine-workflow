@@ -21,3 +21,10 @@ def test_cli_run_status_approve(ws, capsys):
 
     assert main(base + ["reject", run_dir.name, "--reason", "x"]) == 2
     assert main(base + ["approve", "nope"]) == 2
+
+
+def test_cli_reports_unexpected_failure_without_traceback(ws, capsys):
+    ws["params"].write_text("version: [", encoding="utf-8")
+    code = main(["--runs-dir", str(ws["runs"]), "run", "--rehearsal", "--params", str(ws["params"])])
+    err = capsys.readouterr().err
+    assert code == 1 and "실행 실패" in err and "기록:" in err

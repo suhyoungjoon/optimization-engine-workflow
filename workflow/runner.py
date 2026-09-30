@@ -5,7 +5,9 @@ run_workflow는 1~4단계를 돌리고 awaiting_approval에서 멈춘다. 개선
 """
 
 import json
+import os
 import traceback
+from contextlib import contextmanager
 from importlib import metadata
 from pathlib import Path
 
@@ -43,33 +45,35 @@ def run_workflow(engine: Engine, *, params_path: str | Path, runs_dir: str | Pat
                  llm, llm_config: dict, settings: dict, rehearsal: bool = False) -> dict:
     store = RunStore(runs_dir)
     params_path = Path(params_path).resolve()
-    params = engine.load_params(params_path)
     run_id = store.create({
         "engine": engine.name,
-        "model": model_name(engine.name, params["version"]),
+        "model": None,              # params를 읽은 뒤 채운다 (읽기 실패도 이 실행의 failed로 남기기 위해)
         "params_path": str(params_path),
-        "params_version": params["version"],
+        "params_version": None,
         "scenario": {"seed": seed, "faults": faults},
         "llm": {"model": llm.model, "rehearsal": rehearsal},
         "core": core_ref(),
     })
-    limits = settings["llm"]
-    stage = "run"
+    stage = "setup"
     try:
+        params = engine.load_params(params_path)
+        store.update(run_id, model=model_name(engine.name, params["version"]), params_version=params["version"])
+        analyze_calls, propose_calls = settings["llm"]["analyze_max_calls"], settings["llm"]["propose_max_calls"]
+
+        stage = "run"
         pack, instance, decisions, result = stages.run_stage(engine, params, seed, faults)
         store.save_stage(run_id, "run", result)
         store.save_stage(run_id, "decisions", decisions)
 
         stage = "analysis"
-        report = stages.analysis_stage(pack, instance, decisions, llm, llm_config, limits["analyze_max_calls"])
+        report = stages.analysis_stage(pack, instance, decisions, llm, llm_config, analyze_calls)
         store.save_stage(run_id, "analysis", report)
         if report["stop"] != "submitted" or not report["findings"]:
             return store.set_status(run_id, FAILED, f"결과분석: 근거 있는 발견 없음 (stop={report['stop']})")
         store.set_status(run_id, ANALYZED)
 
         stage = "proposals"
-        out = stages.proposal_stage(engine, pack, instance, params, report, llm, llm_config,
-                                    limits["propose_max_calls"])
+        out = stages.proposal_stage(engine, pack, instance, params, report, llm, llm_config, propose_calls)
         store.save_stage(run_id, "proposals", out)
         if not any(p["state"] == stages.VALID for p in out["proposals"]):
             return store.set_status(run_id, FAILED, f"개선안 도출: 검증할 params 안 없음 (stop={out['stop']})")
@@ -86,6 +90,21 @@ def run_workflow(engine: Engine, *, params_path: str | Path, runs_dir: str | Pat
         raise
 
 
+@contextmanager
+def _params_lock(params_path: str | Path):
+    """승인·반려를 params 파일 단위로 직렬화한다. 버전 확인과 쓰기 사이에 다른 승인이 끼어들지 못하게 한다."""
+    lock = Path(f"{params_path}.lock")
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise WorkflowError(f"다른 승인·반려가 진행 중이다 ({lock}). 진행 중인 작업이 없으면 이 파일을 지운다") from None
+    try:
+        os.close(fd)
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
 def _awaiting(store: RunStore, run_id: str) -> dict:
     try:
         run = store.load(run_id)
@@ -100,7 +119,12 @@ def approve(engine: Engine, *, runs_dir: str | Path, run_id: str, proposal_id: i
             note: str | None = None) -> dict:
     """사람의 승인: 검증을 통과한 안 하나를 params 파일에 반영하고 버전을 올린다."""
     store = RunStore(runs_dir)
-    run = _awaiting(store, run_id)
+    with _params_lock(_awaiting(store, run_id)["params_path"]):
+        return _approve_locked(engine, store, run_id, proposal_id, note)
+
+
+def _approve_locked(engine: Engine, store: RunStore, run_id: str, proposal_id: int | None, note: str | None) -> dict:
+    run = _awaiting(store, run_id)   # 잠금 안에서 상태를 다시 확인한다
     results = {r["id"]: r for r in store.load_stage(run_id, "validation")["results"]}
     approvable = [i for i, r in results.items() if r["approvable"]]
     if proposal_id is None:
@@ -131,6 +155,7 @@ def approve(engine: Engine, *, runs_dir: str | Path, run_id: str, proposal_id: i
 def reject(*, runs_dir: str | Path, run_id: str, reason: str) -> dict:
     """사람의 반려: params는 그대로 두고 기록만 남긴다."""
     store = RunStore(runs_dir)
-    _awaiting(store, run_id)
-    store.save_stage(run_id, "apply", {"decision": "rejected", "at": now(), "reason": reason})
-    return store.set_status(run_id, REJECTED, reason)
+    with _params_lock(_awaiting(store, run_id)["params_path"]):
+        _awaiting(store, run_id)
+        store.save_stage(run_id, "apply", {"decision": "rejected", "at": now(), "reason": reason})
+        return store.set_status(run_id, REJECTED, reason)

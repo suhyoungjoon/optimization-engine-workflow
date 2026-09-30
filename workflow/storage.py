@@ -32,8 +32,9 @@ class RunStore:
         self.root = Path(runs_dir)
 
     def _dir(self, run_id: str) -> Path:
-        d = self.root / run_id
-        if not (d / "run.json").is_file():
+        root = self.root.resolve()
+        d = (root / run_id).resolve()
+        if d.parent != root or not (d / "run.json").is_file():   # ../ 나 절대 경로로 runs 밖을 가리키지 못하게
             raise KeyError(f"실행을 찾을 수 없음: {run_id}")
         return d
 

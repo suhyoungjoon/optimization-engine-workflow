@@ -43,7 +43,7 @@ def _fmt(v) -> str:
 
 def print_status(store: RunStore, run_id: str) -> None:
     run = store.load(run_id)
-    print(f"{run['run_id']}  [{run['status']}]  {run['model']}  seed={run['scenario']['seed']} "
+    print(f"{run['run_id']}  [{run['status']}]  {run['model'] or '-'}  seed={run['scenario']['seed']} "
           f"faults={','.join(run['scenario']['faults']) or '-'}  llm={run['llm']['model']}"
           f"{' (rehearsal)' if run['llm']['rehearsal'] else ''}")
     for h in run["history"]:
@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                 print_status(store, args.run_id)
             else:
                 for run in store.list():
-                    print(f"{run['run_id']}  {run['status']:17s}  {run['model']}  llm={run['llm']['model']}")
+                    print(f"{run['run_id']}  {run['status']:17s}  {run['model'] or '-'}  llm={run['llm']['model']}")
             return 0
         if args.cmd == "approve":
             runner.approve(get_engine(store.load(args.run_id)["engine"]), runs_dir=args.runs_dir, run_id=args.run_id, proposal_id=args.proposal,
@@ -135,3 +135,9 @@ def main(argv: list[str] | None = None) -> int:
     except (runner.WorkflowError, KeyError) as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:   # run_workflow는 failed로 기록한 뒤 다시 던진다. 상세는 run.json의 error
+        print(f"실행 실패: {type(exc).__name__}: {exc}", file=sys.stderr)
+        for run in store.list()[-1:]:
+            if run["status"] == "failed":
+                print(f"기록: {run['run_id']} (python -m workflow status {run['run_id']})", file=sys.stderr)
+        return 1
