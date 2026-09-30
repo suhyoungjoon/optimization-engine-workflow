@@ -14,6 +14,7 @@ from engines import ENGINES, get_engine
 from modelreg import Registry, RegistryError
 from workflow import config, runner
 from workflow.judge import check_config
+from workflow.pipeline import default_pipeline
 from workflow.rehearsal import rehearsal_llm
 from workflow.state import FINAL
 from workflow.storage import STAGE_FILES, RunStore
@@ -21,13 +22,6 @@ from workflow.storage import STAGE_FILES, RunStore
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = Path(__file__).resolve().parent / "static"
 SET_NAMES = ("train", "holdout")
-STAGES = [  # 화면의 5단계: 키, 이름, 주체(ai: AI+코드, code: 코드, human: 사람+코드)
-    {"key": "run", "label": "실행", "actor": "code"},
-    {"key": "analysis", "label": "결과분석", "actor": "ai"},
-    {"key": "proposals", "label": "개선안 도출", "actor": "ai"},
-    {"key": "validation", "label": "검증(비교)", "actor": "code"},
-    {"key": "apply", "label": "개선적용", "actor": "human"},
-]
 
 
 def _flatten(value, prefix: str = "") -> dict:
@@ -97,7 +91,8 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
     def meta():
         pack = champion_pack()
         dims = pack.dimensions()
-        return {"engines": list(ENGINES), "stages": STAGES, "rehearsal_only": True,
+        stages = [{k: s[k] for k in ("key", "label", "actor", "kind")} for s in default_pipeline()["stages"]]
+        return {"engines": list(ENGINES), "stages": stages, "rehearsal_only": True,
                 "faults": list_faults(pack),
                 "metrics": sorted(_metric_names(pack)),
                 "dimensions": {k: v.get("label") for k, v in dims.get("dimensions", {}).items()}}
@@ -110,6 +105,10 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
             small = pack.subset(inst, pack.items(inst)[:5])
             metric_cache["names"] = list(pack.metrics(small, pack.solve(small, pack.params)))
         return metric_cache["names"]
+
+    @app.get("/api/pipeline")
+    def pipeline():
+        return default_pipeline()
 
     # --- 실행 ---
 

@@ -279,6 +279,15 @@ details pre { background: var(--surface-2); padding: 8px 10px; border-radius: va
 .fault-toggle input { margin: 0; }
 .fault-toggle.on { background: var(--info-wash); border-color: transparent; color: var(--actor-code); font-weight: 600; }
 
+/* --- 다이어그램 --- */
+.diagram-wrap { overflow-x: auto; }
+.diagram { width: 100%; height: auto; display: block; }
+.dg-node { cursor: pointer; outline: none; }
+.dg-node:hover rect:first-child, .dg-node:focus-visible rect:first-child { stroke: var(--ink); }
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 2px; background: var(--surface); }
+.segmented button { border: none; border-radius: 999px; padding: 4px 12px; font-size: 12px; background: transparent; color: var(--ink-2); }
+.segmented button.on { background: var(--ink); color: var(--page); }
+
 #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 60; }
 #toast .msg { background: var(--ink); color: var(--page); padding: 9px 16px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow); margin-top: 6px; }
 #toast .msg.bad { background: var(--critical); color: #fff; }

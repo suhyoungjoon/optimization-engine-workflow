@@ -109,7 +109,7 @@ function route() {
   const parts = (location.hash.replace(/^#\/?/, "") || "runs").split("/");
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === parts[0]));
   const view = { runs: parts[1] ? () => runPage(parts[1], parts[2]) : runsPage, models: () => modelsPage(parts[1]),
-                 settings: settingsPage }[parts[0]] || runsPage;
+                 workflow: () => workflowPage(parts[1]), settings: settingsPage }[parts[0]] || runsPage;
   Promise.resolve(view()).catch((e) => app.replaceChildren(h("div", { class: "error-box" }, e.message)));
 }
 
@@ -211,7 +211,14 @@ async function runPage(runId, stageKey) {
   const states = stageStates(run, stages);
   const selected = stageKey || defaultStage(states);
 
-  const pipeline = h("div", { class: "pipeline" }, META.stages.map((m, i) => stageNode(m, i, states[m.key], run, stages, m.key === selected)));
+  const view = pipelineView();
+  const pipeline = view === "diagram"
+    ? h("div", { class: "card diagram-wrap", style: "margin-bottom:18px" }, pipelineDiagram(await pipelineDef(), {
+        states, selected, progress: run.progress, onSelect: (k, kind) => kind === "stage" && (location.hash = `#/runs/${run.run_id}/${k}`) }))
+    : h("div", { class: "pipeline" }, META.stages.map((m, i) => stageNode(m, i, states[m.key], run, stages, m.key === selected)));
+  const toggle = h("div", { class: "segmented", role: "group", "aria-label": "보기" },
+    [["cards", "단계 카드"], ["diagram", "다이어그램"]].map(([v, t]) => h("button", { class: view === v ? "on" : "", "aria-pressed": String(view === v),
+      onclick: () => { pipelineView(v); runPage(runId, stageKey); } }, t)));
   const panel = stagePanel(selected, detail, states);
   const scen = run.scenarios;
   app.replaceChildren(
@@ -226,7 +233,7 @@ async function runPage(runId, stageKey) {
             `${SET_LABEL[k]} ${(scen[k].cases || []).length}건`)),
           h("span", { class: "muted" }, fmtTime(run.created_at)))),
       h("span", { class: "spacer" }),
-      historyList(run)),
+      h("div", { class: "stack", style: "gap:8px; align-items:flex-end" }, toggle, historyList(run))),
     pipeline, panel);
 
   if (!detail.final && run.status !== "awaiting_approval") {
@@ -305,6 +312,13 @@ function stagePanel(key, detail, states) {
       states[key] === "failed" ? h("span", { class: "badge bad" }, "실패") : null),
     states[key] === "failed" ? h("div", { class: "error-box", style: "margin-bottom:12px" }, detail.run.history.at(-1)?.reason) : null,
     body);
+}
+
+function pipelineView(set) {   // 보기 선택은 이 브라우저에만 기억한다
+  try {
+    if (set) localStorage.setItem("pipelineView", set);
+    return localStorage.getItem("pipelineView") || "cards";
+  } catch { return set || "cards"; }
 }
 
 const notYet = (text = "이 단계는 아직 결과가 없다.") => h("div", { class: "empty" }, text);
@@ -861,3 +875,216 @@ function paramsCard(champ) {
   window.addEventListener("hashchange", route);
   route();
 })();
+
+// --- 워크플로우 다이어그램 (workflow/pipeline.yaml에서 그린다) ---
+
+let PIPELINE = null;
+const KIND_LABEL = { agent: "AI agent", code: "결정적 코드", gate: "사람 승인 게이트" };
+const pipelineDef = async () => (PIPELINE ||= await api("/api/pipeline"));
+const textW = (t, size) => [...String(t)].reduce((w, ch) => w + (ch.charCodeAt(0) > 0x1100 ? size * 0.98 : size * 0.6), 0);
+
+function layoutDiagram(defn) {
+  const stages = defn.stages;
+  const colW = 236, nodeW = 156, nodeH = 84, pad = 36;
+  const stageY = 176, artY = 292, outY = 372;
+  const cx = (i) => pad + colW * i + colW / 2;
+  const W = pad * 2 + colW * stages.length;
+  const pos = {};
+  stages.forEach((s, i) => (pos[s.key] = { x: cx(i), y: stageY, w: nodeW, h: nodeH, kind: "stage" }));
+  // 입력: 읽는 단계들의 가운데 위, 겹치면 오른쪽으로 민다
+  const inW = (i) => Math.max(118, textW(i.label, 13) + 34);
+  const prefs = defn.inputs.map((inp) => {
+    const readers = stages.map((s, i) => (s.reads.includes(inp.key) ? i : null)).filter((i) => i != null);
+    return { inp, x: readers.length ? readers.reduce((a, i) => a + cx(i), 0) / readers.length : cx(0), readers };
+  }).sort((a, b) => a.x - b.x);
+  let right = pad;
+  for (const p of prefs) {
+    const w = inW(p.inp);
+    const x = Math.max(p.x, right + w / 2 + 14);
+    pos[p.inp.key] = { x, y: 58, w, h: 46, kind: "input" };
+    right = x + w / 2;
+  }
+  const overflow = right - (W - pad);
+  if (overflow > 0) prefs.forEach((p) => (pos[p.inp.key].x -= overflow));
+  // 산출물: 만든 단계 오른쪽 틈 아래. 마지막(게이트) 단계의 산출물은 승인 결과 쪽에 둔다
+  const last = stages.length - 1;
+  stages.forEach((s, i) => s.writes.forEach((a) => {
+    const art = defn.artifacts.find((x) => x.key === a);
+    const w = textW(art.label, 12) + 28;
+    pos[a] = i < last ? { x: cx(i) + colW / 2, y: artY, w, h: 30, kind: "artifact" }
+                      : { x: cx(i), y: outY + 18, w: Math.max(w, 132), h: 46, kind: "artifact-final" };
+  }));
+  const H = outY + 84;
+  return { W, H, pos, colW, nodeW, nodeH, stageY, artY, outY, cx };
+}
+
+function pipelineDiagram(defn, { states = null, selected = null, progress = null, onSelect = () => {} } = {}) {
+  const L = layoutDiagram(defn);
+  const { pos } = L;
+  const stages = defn.stages;
+  const actorVar = (a) => `var(--actor-${a})`;
+  const arrow = (id, color) => s("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" },
+    s("path", { d: "M0,0 L10,5 L0,10 z", fill: color }));
+  const label = (x, y, text, attrs = {}) => s("text", { x, y, "text-anchor": "middle", "font-size": 12, fill: "var(--ink-2)", ...attrs }, text);
+  const edgeLabel = (x, y, text, attrs = {}) => label(x, y, text, { stroke: "var(--surface)", "stroke-width": 5, "paint-order": "stroke", "stroke-linejoin": "round", ...attrs });
+  const clickable = (key, kind, children) => s("g", { class: "dg-node", tabindex: 0, role: "button", "aria-label": key,
+    onclick: () => onSelect(key, kind), onkeydown: (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onSelect(key, kind)) }, children);
+  const stateIcon = { done: ["✓", "var(--good-ink)"], failed: ["✕", "var(--critical-ink)"], waiting: ["●", "var(--ink)"], rejected: ["–", "var(--muted)"], active: ["…", "var(--actor-code)"] };
+
+  const edges = [];
+  // 입력 → 읽는 단계
+  for (const inp of defn.inputs) {
+    const a = pos[inp.key];
+    stages.filter((st) => st.reads.includes(inp.key)).forEach((st) => {
+      const b = pos[st.key];
+      const y1 = a.y + a.h / 2, y2 = b.y - b.h / 2 - 2;
+      edges.push(s("path", { d: `M${a.x},${y1} C${a.x},${y1 + 34} ${b.x},${y2 - 34} ${b.x},${y2}`, fill: "none", stroke: "var(--axis)",
+        "stroke-width": 1.4, "stroke-dasharray": "4 3", "marker-end": "url(#dg-arrow-muted)" }));
+    });
+  }
+  // 단계 → 단계 (주 흐름)와 산출물
+  stages.forEach((st, i) => {
+    if (i === stages.length - 1) return;
+    const a = pos[st.key], b = pos[stages[i + 1].key];
+    edges.push(s("line", { x1: a.x + a.w / 2, y1: a.y, x2: b.x - b.w / 2 - 3, y2: b.y, stroke: "var(--ink-2)", "stroke-width": 2, "marker-end": "url(#dg-arrow)" }));
+    st.writes.forEach((art) => {
+      const p = pos[art];
+      edges.push(s("line", { x1: p.x, y1: a.y, x2: p.x, y2: p.y - p.h / 2, stroke: "var(--axis)", "stroke-width": 1.2 }));
+      edges.push(s("circle", { cx: p.x, cy: a.y, r: 3.5, fill: "var(--ink-2)" }));
+    });
+  });
+  // 게이트의 결과
+  const gate = stages[stages.length - 1];
+  const g = pos[gate.key];
+  const outcomes = gate.outcomes || [];
+  const side = outcomes.filter((o) => !o.to && !o.to_stage);
+  const back = outcomes.filter((o) => o.to_stage);
+  const toArt = outcomes.filter((o) => o.to);
+  toArt.forEach((o) => {
+    const p = pos[o.to];
+    edges.push(s("line", { x1: g.x, y1: g.y + g.h / 2, x2: p.x, y2: p.y - p.h / 2 - 3, stroke: "var(--good)", "stroke-width": 2, "marker-end": "url(#dg-arrow-good)" }));
+    edges.push(edgeLabel(p.x + 8, (g.y + g.h / 2 + p.y - p.h / 2) / 2 + 4, o.label, { "text-anchor": "start", fill: "var(--good-ink)", "font-weight": 650 }));
+  });
+  side.forEach((o, k) => {
+    const x = g.x - L.colW * 0.62, y = L.outY + 18 + k * 40;
+    edges.push(s("path", { d: `M${g.x - g.w / 4},${g.y + g.h / 2} C${g.x - g.w / 4},${y - 10} ${x + 60},${y} ${x + 46},${y}`, fill: "none", stroke: "var(--muted)", "stroke-width": 1.5, "marker-end": "url(#dg-arrow-muted)" }));
+    edges.push(s("rect", { x: x - 46, y: y - 15, width: 92, height: 30, rx: 15, fill: "var(--surface-2)", stroke: "var(--border)" }));
+    edges.push(label(x, y + 4, o.label, { fill: "var(--ink-2)", "font-weight": 600 }));
+    edges.push(label(x, y + 30, o.detail, { "font-size": 11, fill: "var(--muted)" }));
+  });
+  back.forEach((o) => {
+    const t = pos[o.to_stage];
+    const y = L.stageY + L.nodeH / 2 + 18;
+    edges.push(s("path", { d: `M${g.x - g.w / 2 + 16},${g.y + g.h / 2} C${g.x - g.w / 2 + 16},${y + 30} ${t.x + t.w / 2 - 16},${y + 30} ${t.x + t.w / 2 - 16},${t.y + t.h / 2 + 3}`,
+      fill: "none", stroke: "var(--actor-human)", "stroke-width": 1.5, "stroke-dasharray": "5 3", "marker-end": "url(#dg-arrow-human)" }));
+    edges.push(edgeLabel((g.x + t.x) / 2, y + 30, `${o.label}: ${o.detail}`, { "font-size": 11.5, fill: "var(--ink)", "font-weight": 600 }));
+  });
+  // 순환: 새 버전 → 다음 실행의 챔피언, 되돌리기
+  for (const lp of defn.loops || []) {
+    const a = pos[lp.from], b = pos[lp.to];
+    if (!a || !b) continue;
+    if (lp.from === lp.to) {
+      edges.push(s("path", { d: `M${a.x - a.w / 2},${a.y - 6} C${a.x - a.w / 2 - 34},${a.y - 34} ${a.x - a.w / 2 - 34},${a.y + 26} ${a.x - a.w / 2 - 2},${a.y + 8}`,
+        fill: "none", stroke: "var(--actor-human)", "stroke-width": 1.4, "marker-end": "url(#dg-arrow-human)" }));
+      edges.push(edgeLabel(a.x - a.w / 2 - 4, a.y + 38, lp.label, { "font-size": 11, "text-anchor": "end", fill: "var(--ink-2)" }));
+      continue;
+    }
+    const rx = L.W - 14, top = 18;
+    edges.push(s("path", { d: `M${a.x + a.w / 2},${a.y} L${rx},${a.y} L${rx},${top} L${b.x},${top} L${b.x},${b.y - b.h / 2 - 3}`,
+      fill: "none", stroke: "var(--good)", "stroke-width": 1.6, "stroke-dasharray": "6 4", "marker-end": "url(#dg-arrow-good)" }));
+    edges.push(edgeLabel((b.x + rx) / 2, top - 5, lp.label, { "font-size": 11.5, fill: "var(--good-ink)", "font-weight": 600 }));
+  }
+
+  const nodes = [];
+  for (const inp of defn.inputs) {
+    const p = pos[inp.key], sel = selected === inp.key;
+    nodes.push(clickable(inp.key, "input", [
+      s("rect", { x: p.x - p.w / 2, y: p.y - p.h / 2, width: p.w, height: p.h, rx: 8, fill: sel ? "var(--surface-2)" : "var(--surface)", stroke: sel ? "var(--ink)" : "var(--axis)", "stroke-width": sel ? 2 : 1, "stroke-dasharray": "4 3" }),
+      label(p.x, p.y - 2, inp.label, { fill: "var(--ink)", "font-weight": 650, "font-size": 13 }),
+      label(p.x, p.y + 14, "입력", { "font-size": 10.5, fill: "var(--muted)" })]));
+  }
+  for (const art of defn.artifacts) {
+    const p = pos[art.key];
+    if (!p) continue;
+    const sel = selected === art.key, final = p.kind === "artifact-final";
+    nodes.push(clickable(art.key, "artifact", [
+      s("rect", { x: p.x - p.w / 2, y: p.y - p.h / 2, width: p.w, height: p.h, rx: final ? 10 : p.h / 2,
+        fill: final ? "var(--good-wash)" : "var(--surface-2)", stroke: sel ? "var(--ink)" : final ? "var(--good)" : "var(--border)", "stroke-width": sel || final ? 2 : 1 }),
+      label(p.x, p.y + (final ? -1 : 4), art.label, { fill: final ? "var(--good-ink)" : "var(--ink-2)", "font-weight": 600 }),
+      final ? label(p.x, p.y + 15, "모델 레지스트리", { "font-size": 10.5, fill: "var(--muted)" }) : null]));
+  }
+  stages.forEach((st, i) => {
+    const p = pos[st.key], sel = selected === st.key;
+    const state = states?.[st.key];
+    const x0 = p.x - p.w / 2, y0 = p.y - p.h / 2;
+    const border = state === "failed" ? "var(--critical)" : state === "active" ? actorVar(st.actor) : sel ? "var(--ink)" : "var(--axis)";
+    const icon = state && stateIcon[state];
+    nodes.push(clickable(st.key, "stage", s("g", { opacity: state === "pending" ? 0.5 : 1 },
+      s("rect", { x: x0, y: y0, width: p.w, height: p.h, rx: 10, fill: "var(--surface)", stroke: border, "stroke-width": sel || state === "active" || state === "failed" ? 2.4 : 1.2 }),
+      st.kind === "gate" ? s("rect", { x: x0 + 4, y: y0 + 4, width: p.w - 8, height: p.h - 8, rx: 7, fill: "none", stroke: actorVar(st.actor), "stroke-width": 1 }) : null,
+      s("rect", { x: x0, y: y0, width: p.w, height: 6, rx: 3, fill: actorVar(st.actor) }),
+      s("circle", { cx: x0 + 20, cy: y0 + 28, r: 11, fill: actorVar(st.actor) }),
+      s("text", { x: x0 + 20, y: y0 + 32, "text-anchor": "middle", "font-size": 12, "font-weight": 700, fill: st.actor === "human" ? "var(--actor-human-ink)" : "#fff" }, i + 1),
+      s("text", { x: x0 + 38, y: y0 + 33, "font-size": 14, "font-weight": 650, fill: "var(--ink)" }, st.label),
+      s("text", { x: x0 + 14, y: y0 + 56, "font-size": 11, fill: "var(--muted)" }, ACTOR_LABEL[st.actor]),
+      s("text", { x: x0 + 14, y: y0 + 72, "font-size": 11, fill: state === "active" ? actorVar(st.actor) : "var(--ink-2)", "font-weight": state === "active" ? 600 : 400 },
+        state === "active" ? (progress?.stage === st.key ? `${progress.detail}${progress.total > 1 ? ` (${progress.done}/${progress.total})` : ""}` : "진행 중") : KIND_LABEL[st.kind]),
+      icon ? s("text", { x: x0 + p.w - 14, y: y0 + 32, "text-anchor": "end", "font-size": 15, "font-weight": 700, fill: icon[1] }, icon[0]) : null)));
+  });
+
+  return s("svg", { viewBox: `0 0 ${L.W} ${L.H}`, class: "diagram", role: "group", "aria-label": "워크플로우 다이어그램", style: `min-width:${Math.round(L.W * 0.72)}px` },
+    s("defs", {}, arrow("dg-arrow", "var(--ink-2)"), arrow("dg-arrow-muted", "var(--axis)"), arrow("dg-arrow-good", "var(--good)"), arrow("dg-arrow-human", "var(--actor-human)")),
+    edges, nodes);
+}
+
+function diagramDetail(defn, key) {
+  const st = defn.stages.find((x) => x.key === key);
+  const inp = defn.inputs.find((x) => x.key === key);
+  const art = defn.artifacts.find((x) => x.key === key);
+  const nameOf = (k) => (defn.inputs.find((x) => x.key === k) || defn.artifacts.find((x) => x.key === k))?.label || k;
+  const chipsOf = (keys) => h("span", { class: "chips" }, keys.length ? keys.map((k) => h("span", { class: "chip" }, nameOf(k))) : h("span", { class: "muted" }, "없음"));
+  if (st) {
+    const i = defn.stages.indexOf(st);
+    return h("div", { class: "card stage-panel", style: `--c: var(--actor-${st.actor})` },
+      h("div", { class: "panel-head" }, h("h2", {}, `${i + 1}. ${st.label}`), actorChip(st.actor),
+        h("span", { class: "badge outline" }, st.kind === "gate" ? "사람 승인 게이트 (고정)" : KIND_LABEL[st.kind])),
+      h("p", { style: "margin:0 0 12px" }, st.does),
+      h("dl", { class: "kv" },
+        h("dt", {}, "입력"), h("dd", {}, chipsOf(st.reads)),
+        h("dt", {}, "산출물"), h("dd", {}, chipsOf(st.writes)),
+        h("dt", {}, "읽는 설정"), h("dd", {}, st.settings.length ? h("span", { class: "chips" }, st.settings.map((k) => h("a", { class: "chip", href: "#/settings" }, k))) : h("span", { class: "muted" }, "없음")),
+        h("dt", {}, "재사용"), h("dd", {}, h("span", { class: "chips" }, st.reuses.map((k) => h("code", { class: "chip" }, k)))),
+        h("dt", {}, "코드"), h("dd", { class: "mono" }, st.impl),
+        st.outcomes ? [h("dt", {}, "결과"), h("dd", {}, st.outcomes.map((o) => h("div", {}, h("b", {}, o.label), " ", h("span", { class: "ink-2" }, o.detail))))] : null));
+  }
+  const item = inp || art;
+  if (!item) return h("div");
+  return h("div", { class: "card" },
+    h("div", { class: "panel-head" }, h("h2", {}, item.label), h("span", { class: "badge outline" }, inp ? "입력" : "산출물")),
+    h("dl", { class: "kv" },
+      inp ? [h("dt", {}, "내용"), h("dd", {}, inp.detail), h("dt", {}, "위치"), h("dd", { class: "mono" }, inp.source)] : [h("dt", {}, "파일"), h("dd", { class: "mono" }, art.file)],
+      h("dt", {}, "만드는 단계"), h("dd", {}, defn.stages.filter((x) => x.writes.includes(item.key)).map((x) => x.label).join(", ") || "워크플로우 밖"),
+      h("dt", {}, "쓰는 단계"), h("dd", {}, defn.stages.filter((x) => x.reads.includes(item.key)).map((x) => x.label).join(", ") || "–")),
+    inp?.link ? h("div", { style: "margin-top:10px" }, h("a", { href: inp.link }, "관련 화면으로")) : null);
+}
+
+async function workflowPage(sel) {
+  const defn = await pipelineDef();
+  const selected = sel || defn.stages[0].key;
+  const detail = h("div");
+  const holder = h("div", { class: "diagram-wrap" });
+  const draw = (key) => {
+    const onSelect = (k) => { history.replaceState(null, "", `#/workflow/${k}`); draw(k); };   // 해시만 바꾸고 다시 그리지 않는다
+    holder.replaceChildren(pipelineDiagram(defn, { selected: key, onSelect }));
+    detail.replaceChildren(diagramDetail(defn, key));
+  };
+  app.replaceChildren(
+    h("div", { class: "row", style: "margin-bottom:6px" }, h("h1", {}, "워크플로우")),
+    h("p", { class: "ink-2", style: "margin:0 0 16px" }, "실행 → 결과분석 → 개선안 도출 → 검증 → (승인 대기) → 개선적용. 노드를 누르면 하는 일, 입력·산출물, 읽는 설정, 코드 위치를 본다. 정의: workflow/pipeline.yaml"),
+    h("div", { class: "card" }, holder,
+      h("div", { class: "row small ink-2", style: "margin-top:8px; gap:16px" },
+        actorChip("ai"), actorChip("code"), actorChip("human"),
+        h("span", {}, "— 주 흐름"), h("span", {}, "┈ 입력"), h("span", { style: "color:var(--good-ink)" }, "┈ 승인·다음 실행"), h("span", {}, "┈ 사람의 되돌림·값 수정"))),
+    h("div", { style: "margin-top:16px" }, detail));
+  draw(selected);
+}

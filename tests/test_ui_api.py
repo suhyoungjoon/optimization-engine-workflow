@@ -50,6 +50,9 @@ def test_page_and_meta(ui):
     assert [s["key"] for s in meta["stages"]] == ["run", "analysis", "proposals", "validation", "apply"]
     assert meta["rehearsal_only"] and {f["id"] for f in meta["faults"]} == {"P1", "P2", "P3", "P4"}
     assert "assignment_rate" in meta["metrics"] and meta["dimensions"]["area_zone"]
+    pipeline = client.get("/api/pipeline").json()
+    assert [s["key"] for s in pipeline["stages"]] == [s["key"] for s in meta["stages"]]
+    assert pipeline["stages"][-1]["kind"] == "gate" and {i["key"] for i in pipeline["inputs"]} >= {"champion", "scenarios"}
 
 
 def test_run_from_start_to_approval(ui):
