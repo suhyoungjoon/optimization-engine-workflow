@@ -5,11 +5,16 @@ run_workflow는 1~4단계를 돌리고 awaiting_approval에서 멈춘다. 개선
 경로(모델 레지스트리, runs, 시나리오 세트)는 모두 인자로 받는다. 코어의 기본 경로(site-packages)는 쓰지 않는다.
 """
 
+import copy
 import json
+import time
 import traceback
 from importlib import metadata
 from pathlib import Path
 
+from core import params_errors
+
+from engines import get_engine
 from engines.base import Engine
 from modelreg import Registry, RegistryError
 
@@ -44,8 +49,24 @@ def model_name(engine_name: str, version: int) -> str:
     return f"{engine_name}@v{version}"
 
 
+def _progress_writer(store: RunStore, run_id: str, min_interval: float = 0.2):
+    """단계 진행을 run.json의 progress에 남긴다 (화면이 읽는다). 너무 잦은 쓰기는 건너뛴다."""
+    last = [0.0]
+
+    def write(stage: str, done: int, total: int, detail: str = "") -> None:
+        t = time.monotonic()
+        if done < total and t - last[0] < min_interval:
+            return
+        last[0] = t
+        store.update(run_id, progress={"stage": stage, "done": done, "total": total, "detail": detail,
+                                       "at": now()})
+    return write
+
+
 def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path, train_path: str | Path,
-                 holdout_path: str | Path, llm, llm_config: dict, settings: dict, rehearsal: bool = False) -> dict:
+                 holdout_path: str | Path, llm, llm_config: dict, settings: dict, rehearsal: bool = False,
+                 on_start=None) -> dict:
+    """on_start(run_id): 실행 기록을 만든 직후 부른다 (화면이 백그라운드 실행의 ID를 바로 받기 위해)."""
     store = RunStore(runs_dir)
     run_id = store.create({
         "engine": engine.name,
@@ -56,6 +77,8 @@ def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path
         "llm": {"model": llm.model, "rehearsal": rehearsal},
         "core": core_ref(),
     })
+    if on_start:
+        on_start(run_id)
     stage = "setup"
     try:
         registry = Registry(models_dir, engine.name)
@@ -72,12 +95,15 @@ def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path
         store.update(run_id, model=model_name(engine.name, champion), champion_version=champion,
                      scenarios=sets)
 
+        progress = _progress_writer(store, run_id)
         stage = "run"
-        pack, instance, decisions, result = stages.run_stage(engine, params, sets["train"]["cases"])
+        progress("run", 0, len(sets["train"]["cases"]), "챔피언 실행 시작")
+        pack, instance, decisions, result = stages.run_stage(engine, params, sets["train"]["cases"], progress)
         store.save_stage(run_id, "run", result)
         store.save_stage(run_id, "decisions", decisions)   # 대표 케이스의 결정
 
         stage = "analysis"
+        progress("analysis", 0, 1, "분석 agent 실행 중")
         report = stages.analysis_stage(pack, instance, decisions, llm, llm_config, analyze_calls)
         store.save_stage(run_id, "analysis", report)
         if report["stop"] != "submitted" or not report["findings"]:
@@ -85,6 +111,7 @@ def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path
         store.set_status(run_id, ANALYZED)
 
         stage = "proposals"
+        progress("proposals", 0, 1, "개선 agent 실행 중")
         out = stages.proposal_stage(engine, pack, instance, params, report, llm, llm_config, propose_calls)
         store.save_stage(run_id, "proposals", out)
         if not any(p["state"] == stages.VALID for p in out["proposals"]):
@@ -94,7 +121,7 @@ def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path
         stage = "validation"
         try:
             validation = stages.validation_stage(engine, params, out["proposals"], report, sets, judgment,
-                                                 max_seconds)
+                                                 max_seconds, progress)
         except BudgetExceeded as exc:
             return store.set_status(run_id, FAILED, f"검증: {exc}")
         store.save_stage(run_id, "validation", validation)
@@ -165,6 +192,7 @@ def _approve_locked(store: RunStore, registry: Registry, run_id: str, proposal_i
         "verdict": {"pass": result["verdict"]["pass"], "overfit": result["verdict"]["overfit"],
                     "reasons": result["verdict"]["reasons"]},
         "override": {"reason": override_reason} if overridden else None,
+        "origin": proposal.get("origin"),   # 사람이 수정한 AI 안이면 원래 안 번호와 수정 내용
         "approved_at": now(), "note": note,
     })
     registry.set_champion(version, "approve", run_id=run_id, proposal_id=proposal_id)
@@ -200,3 +228,74 @@ def rollback(*, models_dir: str | Path, engine: str, reason: str, to: int | None
             return registry.rollback(reason, to)
     except RegistryError as exc:
         raise WorkflowError(str(exc)) from None
+
+
+# --- AI 개선안 수정 (값만) ---
+
+def _shape(proposal: dict) -> tuple:
+    """값을 뺀 개선안의 모양: 전역 변경 경로 목록, 구간 조건의 when과 set 경로."""
+    return (tuple(c["path"] for c in proposal.get("params_changes") or []),
+            tuple((json.dumps(r["when"], sort_keys=True), tuple(r["set"])) for r in proposal.get("override_rules") or []))
+
+
+def revise(*, runs_dir: str | Path, run_id: str, proposal_id: int, changes: dict, max_seconds: float,
+           note: str | None = None) -> dict:
+    """사람이 AI 개선안의 값을 고친 안을 새 안으로 추가하고, 원래 안과 같은 방식으로 검증·판정한다.
+
+    changes: {"params_changes": [...], "override_rules": [...]} 원래 안과 경로·구간 조건이 같고 값만 다르다.
+    비교 기준은 이 실행의 챔피언 params, 시나리오 세트, 판정 기준이다 (실행 당시 스냅샷).
+    """
+    store = RunStore(runs_dir)
+    registry = _registry(_awaiting(store, run_id))
+    try:
+        with registry.lock():   # 승인·반려와 단계 파일 쓰기가 섞이지 않게
+            return _revise_locked(store, run_id, proposal_id, changes, max_seconds, note)
+    except RegistryError as exc:
+        raise WorkflowError(str(exc)) from None
+
+
+def _revise_locked(store: RunStore, run_id: str, proposal_id: int, changes: dict, max_seconds: float,
+                   note: str | None) -> dict:
+    run = _awaiting(store, run_id)
+    proposals = store.load_stage(run_id, "proposals")
+    validation = store.load_stage(run_id, "validation")
+    original = next((p for p in proposals["proposals"] if p["id"] == proposal_id), None)
+    if original is None or original["state"] != stages.VALID:
+        raise WorkflowError(f"개선안 {proposal_id}는 수정할 수 없다 (검증된 params 안만 수정한다)")
+    edited = {"params_changes": copy.deepcopy(changes.get("params_changes") or []),
+              "override_rules": copy.deepcopy(changes.get("override_rules") or [])}
+    try:
+        same_shape = _shape(edited) == _shape(original["proposal"])
+    except (KeyError, TypeError):
+        same_shape = False
+    if not same_shape:
+        raise WorkflowError("값만 고칠 수 있다: 변경 경로와 구간 조건(when, set 경로)은 원래 안과 같아야 한다")
+    if all(edited[k] == (original["proposal"].get(k) or []) for k in edited):
+        raise WorkflowError("원래 안과 값이 같다")
+
+    engine = get_engine(run["engine"])
+    params = store.load_stage(run_id, "run")["params"]
+    pack = engine.pack_factory(params)
+    errors = params_errors(params, edited, pack.dimensions())
+    if errors:
+        raise WorkflowError("허용 범위 검사 실패: " + "; ".join(errors))
+
+    new_id = max(p["id"] for p in proposals["proposals"]) + 1
+    base = original["proposal"]
+    proposal = {**{k: v for k, v in base.items() if k not in ("params_changes", "override_rules")}, **edited,
+                "title": f"{base.get('title')} (사람 수정)"}
+    entry = {"id": new_id, "state": stages.VALID, "errors": [], "proposal": proposal,
+             "origin": {"revised_from": proposal_id, "by": "human", "at": now(), "note": note,
+                        "before": {k: base.get(k) or [] for k in edited}, "after": edited}}
+    sets = {k: {"name": s["name"], "cases": s["cases"]} for k, s in run["scenarios"].items()}
+    report = store.load_stage(run_id, "analysis")
+    try:
+        result = stages.validation_stage(engine, params, [entry], report, sets, validation["judgment"],
+                                         max_seconds)["results"][0]
+    except BudgetExceeded as exc:
+        raise WorkflowError(f"수정안 검증: {exc}") from None
+    proposals["proposals"].append(entry)
+    validation["results"].append({**result, "origin": entry["origin"]})
+    store.save_stage(run_id, "proposals", proposals)
+    store.save_stage(run_id, "validation", validation)
+    return {"proposal": entry, "result": result}

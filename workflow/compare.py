@@ -19,8 +19,8 @@ def check_deadline(deadline: float | None) -> None:
 
 
 def compare_cases(pack_factory, params: dict, candidate: dict, instances: list[tuple[dict, object]],
-                  slices: dict | None = None, deadline: float | None = None) -> dict:
-    """instances: [(케이스 {seed, faults}, 인스턴스)]. deadline: time.monotonic() 기준."""
+                  slices: dict | None = None, deadline: float | None = None, on_case=None) -> dict:
+    """instances: [(케이스 {seed, faults}, 인스턴스)]. deadline: time.monotonic() 기준. on_case(case): 케이스 하나를 마칠 때."""
     rows = []
     for case, instance in instances:
         check_deadline(deadline)
@@ -29,6 +29,8 @@ def compare_cases(pack_factory, params: dict, candidate: dict, instances: list[t
         rows.append({**case, "before": sim["before"], "after": sim["after"],
                      "violations_after": sim["violations_after"], "slices": sim["slices"],
                      "seconds": round(sim["seconds"], 3)})
+        if on_case:
+            on_case(case)
     return {"cases": rows, "summary": summarize(rows)}
 
 
