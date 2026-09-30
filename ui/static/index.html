@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>엔진 개선 워크플로우</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%232a78d6'/%3E%3Cpath d='M0 0h8L0 8z' fill='%23eb6834'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span>엔진 개선 워크플로우</span>
+  </div>
+  <nav class="nav" aria-label="주 메뉴">
+    <a href="#/runs" data-nav="runs">실행</a>
+    <a href="#/models" data-nav="models">모델 버전</a>
+    <a href="#/settings" data-nav="settings">기준정보</a>
+  </nav>
+  <div class="legend-actors" aria-label="단계 주체">
+    <span class="actor-chip actor-ai">AI + 코드</span>
+    <span class="actor-chip actor-code">코드</span>
+    <span class="actor-chip actor-human">사람</span>
+  </div>
+</header>
+<main id="app" tabindex="-1"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -32,7 +32,7 @@ modelreg/        모델 레지스트리: 버전별 params 스냅샷, 모델 카�
 scenarios/       시나리오 세트 정의 (학습용·검증용 seed·결함 조합)
 settings/        workflow.yaml(상한·판정 기준), llm.yaml
 models/          레지스트리 데이터 (엔진별 버전 디렉터리)
-ui/              워크플로우 화면 (M3)
+ui/              워크플로우 화면 (M3): FastAPI(app.py) + 빌드 없는 단일 페이지(static/)
 tests/           pytest (fake_llm.py는 코어 레포 tests/에서 복사)
 docs/            plan.md, handoff.md(사본)
 runs/            실행 결과·DB·LLM 캐시 (git 제외)
@@ -50,7 +50,7 @@ runs/            실행 결과·DB·LLM 캐시 (git 제외)
 
 ## 기술 스택
 
-Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LLM은 코어의 `AnthropicClient`·`run_tool_loop`을 쓴다. UI는 M3에서 결정 (코어 레포의 React UI는 재사용하지 않음).
+Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LLM은 코어의 `AnthropicClient`·`run_tool_loop`을 쓴다. UI는 FastAPI(코어가 설치)와 빌드 없는 순수 JS 단일 페이지 (코어 레포의 React UI는 재사용하지 않음).
 
 ## 개발 규칙
 
@@ -72,6 +72,7 @@ python -m workflow approve <run_id> --proposal N --override-verdict --reason ...
 python -m workflow reject <run_id> --reason ...                    # 사람 반려 (기록만)
 python -m workflow models [--engine rule]                          # 모델 버전·챔피언 이력
 python -m workflow rollback [--engine rule] [--to N] --reason ...  # 챔피언 되돌리기 (기본: 부모 버전)
+python -m ui                                                       # 워크플로우 화면 http://127.0.0.1:8765 (리허설 실행만 허용)
 ```
 레포 루트에서 실행한다 (`--rehearsal`이 `tests/fake_llm.py`를 쓴다). 공통 옵션 `--runs-dir`, `--models-dir`, run 옵션 `--train`, `--holdout`, `--settings`로 경로를 바꾼다.
 승인·되돌리기는 `models/`를 바꾼다. git 커밋은 사람이 확인하고 직접 한다.
