@@ -7,7 +7,12 @@ import yaml
 
 def load_set(path: str | Path) -> dict:
     path = Path(path)
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return parse_set(yaml.safe_load(path.read_text(encoding="utf-8")) or {}, path)
+
+
+def parse_set(data: dict, path: str | Path) -> dict:
+    """세트 데이터를 검사해 {name, path, cases}로 만든다. path는 오류 메시지와 기록용."""
+    path = Path(path)
     cases = data.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValueError(f"{path}: cases가 비어 있다")
