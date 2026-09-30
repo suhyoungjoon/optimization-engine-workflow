@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optimization-engine-workflow"
+version = "0.1.0"
+description = "Improvement workflow for optimization engines: run, analyze, propose, validate, apply (human-approved)"
+requires-python = ">=3.11"
+dependencies = [
+    # 코어 고정: optimization-agent-harness 0.1.0 (main 1343534, 2026-09-30). 태그가 없어 커밋으로 고정한다
+    "optimization-agent-harness @ git+https://github.com/suhyoungjoon/optimization-agent-harness.git@1343534966ee7743b095a04e4fa00aad79576b42",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["workflow*", "engines*"]   # core·domains·api·scripts·configs는 코어가 쓰는 이름이라 만들지 않는다
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
