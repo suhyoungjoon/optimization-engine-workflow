@@ -1,0 +1,8 @@
+# 학습용 세트: 챔피언을 실행하고(1단계), 첫 케이스로 분석·개선안 도출(2·3단계)을 하고, 검증(4단계)에도 쓴다.
+name: train
+cases:
+  - {seed: 1, faults: [P1, P2, P3, P4]}
+  - {seed: 2, faults: [P1, P2, P3, P4]}
+  - {seed: 3, faults: [P1, P2, P3, P4]}
+  - {seed: 4, faults: [P1, P2, P3, P4]}
+  - {seed: 5, faults: [P1, P2, P3, P4]}
