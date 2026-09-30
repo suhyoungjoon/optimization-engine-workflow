@@ -1,0 +1,6 @@
+# 워크플로우 상한. 코드에 숫자를 두지 않고 여기서 읽는다.
+# 판정 기준(목표 지표, 부작용 한도)은 M2에서 추가한다.
+
+llm:
+  analyze_max_calls: 30        # 2. 결과분석: 분석 agent의 LLM 호출 상한 (코어 analyze의 max_calls)
+  propose_max_calls: 20        # 3. 개선안 도출: 개선 agent의 LLM 호출 상한 (코어 propose의 max_calls)
