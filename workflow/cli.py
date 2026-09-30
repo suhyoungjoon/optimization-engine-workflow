@@ -22,6 +22,7 @@ from modelreg import Registry, RegistryError
 
 from . import runner
 from .judge import SET_LABELS
+from .pipeline import stage_labels
 from .storage import RunStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,6 +57,7 @@ def _judged_metrics(judgment: dict) -> list[str]:
 
 def print_status(store: RunStore, run_id: str) -> None:
     run = store.load(run_id)
+    head = {k: f"{i} {v}".ljust(10) for i, (k, v) in enumerate(stage_labels().items(), start=1)}
     print(f"{run['run_id']}  [{run['status']}]  {run['model'] or '-'}  llm={run['llm']['model']}"
           f"{' (rehearsal)' if run['llm']['rehearsal'] else ''}")
     for key, s in run["scenarios"].items():
@@ -64,22 +66,22 @@ def print_status(store: RunStore, run_id: str) -> None:
         print(f"  {h['at']}  {h['status']}{'  ' + h['reason'] if h.get('reason') else ''}")
     if (r := store.load_stage(run_id, "run")):
         rep = r["representative"]
-        print(f"1 실행      학습용 {r['summary']['cases']}건, 위반 {r['summary']['violations']}건, "
+        print(f"{head['run']}  학습용 {r['summary']['cases']}건, 위반 {r['summary']['violations']}건, "
               f"대표 케이스 seed {rep['seed']} (분석·개선안 도출에 사용)")
         print("            평균 " + ", ".join(f"{k}={_fmt(v)}" for k, v in r["summary"]["metrics"].items()))
     if (a := store.load_stage(run_id, "analysis")):
-        print(f"2 결과분석  발견 {len(a['findings'])}개 (근거 없어 제외 {len(a['dropped'])}개), "
+        print(f"{head['analysis']}  발견 {len(a['findings'])}개 (근거 없어 제외 {len(a['dropped'])}개), "
               f"LLM {a['usage']['llm_calls']}회")
         for f in a["findings"]:
             print(f"            {f['id']} {f['title']}: {f['description']}")
     if (p := store.load_stage(run_id, "proposals")):
-        print(f"3 개선안    {len(p['proposals'])}개, 시험 {p['trials']}회, LLM {p['usage']['llm_calls']}회")
+        print(f"{head['proposals']}  {len(p['proposals'])}개, 시험 {p['trials']}회, LLM {p['usage']['llm_calls']}회")
         for item in p["proposals"]:
             why = f"  ({'; '.join(item['errors'])})" if item["errors"] else ""
             print(f"            [{item['id']}] {item['state']:11s} {item['proposal'].get('title')}{why}")
     if (v := store.load_stage(run_id, "validation")):
         metrics = _judged_metrics(v["judgment"])
-        print(f"4 검증      학습용·검증용 케이스별 챔피언/도전자 비교, 두 세트 모두 통과해야 판정 통과")
+        print(f"{head['validation']}  학습용·검증용 케이스별 챔피언/도전자 비교, 두 세트 모두 통과해야 판정 통과")
         for r in v["results"]:
             verdict = r["verdict"]
             label = "통과" if verdict["pass"] else "불통과" + (" (학습용에서만 효과, 과적합)" if verdict["overfit"] else "")
@@ -93,9 +95,9 @@ def print_status(store: RunStore, run_id: str) -> None:
     if (d := store.load_stage(run_id, "apply")):
         if d["decision"] == "approved":
             extra = f" (판정 무시: {d['override_reason']})" if d.get("override_reason") else ""
-            print(f"5 개선적용  개선안 {d['proposal_id']} 승인: {d['model_before']} → {d['model_after']}{extra}")
+            print(f"{head['apply']}  개선안 {d['proposal_id']} 승인: {d['model_before']} → {d['model_after']}{extra}")
         else:
-            print(f"5 개선적용  반려: {d['reason']}")
+            print(f"{head['apply']}  반려: {d['reason']}")
     if run["status"] == "awaiting_approval":
         print(f"\n승인: python -m workflow approve {run_id} [--proposal N]   반려: python -m workflow reject "
               f"{run_id} --reason ...")
