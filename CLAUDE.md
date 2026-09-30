@@ -26,7 +26,7 @@
 ## 디렉터리 구조
 
 ```
-workflow/        워크플로우 상태 머신, 단계(stage) 구현, CLI
+workflow/        워크플로우 상태 머신, 단계(stage) 구현, CLI, 워크플로우 정의(pipeline.yaml: 화면 다이어그램의 기준)
 engines/         엔진 어댑터 (rule: 코어 규칙 엔진 래핑, solver: M4 이후)
 modelreg/        모델 레지스트리: 버전별 params 스냅샷, 모델 카드, 챔피언 지정, 되돌리기
 scenarios/       시나리오 세트 정의 (학습용·검증용 seed·결함 조합)
@@ -34,7 +34,7 @@ settings/        workflow.yaml(상한·판정 기준), llm.yaml
 models/          레지스트리 데이터 (엔진별 버전 디렉터리)
 ui/              워크플로우 화면 (M3): FastAPI(app.py) + 빌드 없는 단일 페이지(static/)
 tests/           pytest (fake_llm.py는 코어 레포 tests/에서 복사)
-docs/            plan.md, handoff.md(사본)
+docs/            plan.md, handoff.md(사본), extensibility.md(단계·agent 확장 방향, 미구현)
 runs/            실행 결과·DB·LLM 캐시 (git 제외)
 ```
 
@@ -54,6 +54,7 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 
 ## 개발 규칙
 
+- 단계를 바꾸거나 더하면 `workflow/pipeline.yaml`도 함께 고친다 (runner 순서와 다르면 `tests/test_pipeline.py`가 실패한다).
 - API 키는 `.env`. `.env`, `runs/`는 커밋하지 않는다.
 - LLM 경로는 가짜 LLM(`tests/fake_llm.py`) 테스트를 먼저 만든다. 실제 API 실행은 사람이 요청할 때만.
 - 결정적인 부분(시나리오 생성, 비교 판정, 레지스트리)은 테스트를 먼저 작성한다.
