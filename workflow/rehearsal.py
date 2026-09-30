@@ -1,8 +1,10 @@
 """리허설: API 키 없이 가짜 LLM으로 워크플로우를 한 바퀴 돌린다. 수치는 AI 품질과 무관하다 (흐름 확인용).
 
 - 분석 agent: 집계 도구로 B지점 오전, C지점 승주, 관할 경계 여부 구간을 조회하고 발견 3개(F1~F3)를 낸다.
-- 개선 agent: 경계 지역 구간 조건을 한 번 시뮬레이션한 뒤 세 안을 낸다.
-  1) 경계 지역만 3단계 지역 범위 +1km (valid) 2) 전역 9km (허용 범위 밖, invalid) 3) 명세 수정 (unsupported)
+- 개선 agent: 경계 지역 구간 조건을 한 번 시뮬레이션한 뒤 네 안을 낸다.
+  1) 경계 지역만 3단계 지역 범위 +1km (valid): 경계 지역 수요(P4)가 있는 케이스에서만 효과, 희망시간 일치율 하락이 크다
+  2) 3단계 시간 허용 오차 60→75분 (valid): 결함 조합이 달라도 효과가 남는다
+  3) 전역 9km (허용 범위 밖, invalid) 4) 명세 수정 (unsupported)
 
 가짜 LLM은 tests/fake_llm.py(코어 레포 tests/의 사본)를 쓰므로 레포 루트에서 실행한다.
 """
@@ -54,6 +56,10 @@ def _proposer(n):
         {"title": "경계 지역만 3단계 지역 범위 +1km", "kind": "params", "target_findings": ["F3"],
          "rationale": "경계 지역 실패는 대부분 OUT_OF_AREA. 전역 완화 대신 경계 구간에만 적용한다",
          "expected_effect": "경계 지역 할당 증가, 다른 구간 영향 최소", "override_rules": [BOUNDARY_RULE]},
+        {"title": "3단계 시간 허용 오차 60→75분", "kind": "params", "target_findings": ["F1"],
+         "rationale": "오전 수요 집중 구간의 용량 부족을 시간 완화로 흡수한다",
+         "expected_effect": "할당 소폭 증가, 희망시간 일치율 소폭 하락",
+         "params_changes": [{"path": "matching.time_window_min[2]", "value": 75}]},
         {"title": "전역 3단계 지역 범위 대폭 완화", "kind": "params", "target_findings": ["F3"],
          "rationale": "허용 범위 검사를 보여주기 위한 과도한 제안",
          "params_changes": [{"path": "matching.area_extension_km[2]", "value": 9}]},

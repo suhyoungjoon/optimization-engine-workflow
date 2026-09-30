@@ -1,99 +1,207 @@
-"""워크플로우 한 바퀴 (가짜 LLM). 승인 전에는 params가 바뀌지 않고, 승인하면 버전이 오른다."""
+"""워크플로우 한 바퀴 (가짜 LLM, 작은 시나리오 세트).
+
+M2 완료 기준: 검증용 세트에서 효과가 사라지는 개선안(경계 지역 안)을 판정이 걸러내고,
+판정을 통과한 안은 승인으로 새 챔피언이 되며, rollback으로 이전 챔피언에 돌아간다.
+"""
+
+import json
 
 import pytest
 import yaml
 
 from engines import get_engine
+from modelreg import Registry
+from tests.conftest import write_set
 from tests.fake_llm import FakeLLM, tool_use
 from workflow import runner
 from workflow.rehearsal import BOUNDARY_RULE, rehearsal_llm
 from workflow.storage import RunStore
 
 
-def _run(ws, llm=None, seed=42, faults=("P4",)):
-    return runner.run_workflow(get_engine("rule"), params_path=ws["params"], runs_dir=ws["runs"], seed=seed,
-                               faults=list(faults), llm=llm or rehearsal_llm(), llm_config=ws["llm_config"],
-                               settings=ws["settings"], rehearsal=True)
+def _run(ws, llm=None, **overrides):
+    kw = {"models_dir": ws["models"], "runs_dir": ws["runs"], "train_path": ws["train"],
+          "holdout_path": ws["holdout"], "llm": llm or rehearsal_llm(), "llm_config": ws["llm_config"],
+          "settings": ws["settings"], "rehearsal": True, **overrides}
+    return runner.run_workflow(get_engine("rule"), **kw)
 
 
-def _version(ws):
-    return yaml.safe_load(ws["params"].read_text(encoding="utf-8"))["version"]
+def _reg(ws):
+    return Registry(ws["models"], "rule")
 
 
-def test_rehearsal_stops_at_awaiting_approval_without_touching_params(ws):
-    before = ws["params"].read_text(encoding="utf-8")
-    run = _run(ws)
+def _results(ws, run):
+    return {r["id"]: r for r in RunStore(ws["runs"]).load_stage(run["run_id"], "validation")["results"]}
+
+
+@pytest.fixture
+def awaiting(ws):
+    return _run(ws)
+
+
+def test_run_stops_at_awaiting_approval_and_records_reproduction_info(ws, awaiting):
+    run = awaiting
     assert run["status"] == "awaiting_approval"
     assert [h["status"] for h in run["history"]] == ["running", "analyzed", "proposed", "validated",
                                                       "awaiting_approval"]
-    assert ws["params"].read_text(encoding="utf-8") == before
-    # 재현 정보
-    assert run["engine"] == "rule" and run["model"] == "rule@v1" and run["params_version"] == 1
-    assert run["scenario"] == {"seed": 42, "faults": ["P4"]} and run["llm"]["model"] == "fake-model"
-    assert run["core"]["version"] == "0.1.0"
-    store = RunStore(ws["runs"])
-    assert store.load_stage(run["run_id"], "run")["params"]["version"] == 1
-    assert len(store.load_stage(run["run_id"], "decisions")) == 1500
+    assert _reg(ws).versions() == [1] and _reg(ws).champion() == 1          # 승인 전에는 레지스트리 그대로
+    assert run["engine"] == "rule" and run["model"] == "rule@v1" and run["champion_version"] == 1
+    assert [c["seed"] for c in run["scenarios"]["train"]["cases"]] == [1, 2]
+    assert [c["seed"] for c in run["scenarios"]["holdout"]["cases"]] == [201, 202]
+    assert run["llm"]["model"] == "fake-model" and run["core"]["version"] == "0.1.0"
+    stage1 = RunStore(ws["runs"]).load_stage(run["run_id"], "run")
+    assert [c["seed"] for c in stage1["cases"]] == [1, 2] and stage1["representative"]["seed"] == 1
+    assert stage1["summary"]["violations"] == 0 and stage1["params"]["version"] == 1
 
 
-def test_proposals_are_rechecked_and_only_valid_params_are_validated(ws):
-    run = _run(ws)
-    store = RunStore(ws["runs"])
-    states = {p["id"]: p["state"] for p in store.load_stage(run["run_id"], "proposals")["proposals"]}
-    assert states == {1: "valid", 2: "invalid", 3: "unsupported"}
-    [result] = store.load_stage(run["run_id"], "validation")["results"]
-    assert result["id"] == 1 and result["violations_after"] == 0 and result["approvable"]
-    assert result["after"]["assignment_rate"] > result["before"]["assignment_rate"]
-    assert result["slices"]["F3"]["after"]["fail_rate"] < result["slices"]["F3"]["before"]["fail_rate"]
+def test_judgment_filters_effect_that_vanishes_on_holdout(ws, awaiting):
+    states = {p["id"]: p["state"] for p in RunStore(ws["runs"]).load_stage(awaiting["run_id"], "proposals")["proposals"]}
+    assert states == {1: "valid", 2: "valid", 3: "invalid", 4: "unsupported"}
+    boundary, window = _results(ws, awaiting)[1], _results(ws, awaiting)[2]
+    # 경계 지역 안: 학습용에서는 할당이 오르지만 P4가 없는 검증용에서는 효과가 사라진다
+    assert boundary["train"]["summary"]["metrics"]["assignment_rate"]["delta_mean"] > 0.05
+    assert boundary["holdout"]["summary"]["metrics"]["assignment_rate"]["delta_mean"] == 0
+    assert not boundary["verdict"]["pass"] and boundary["verdict"]["overfit"]
+    assert "검증용: assignment_rate 평균 Δ +0.000 (최소 개선 +0.010)" in boundary["verdict"]["reasons"]
+    # 시간 허용 오차 안: 두 세트 모두에서 효과가 남는다
+    assert window["verdict"]["pass"] and window["violations"] == 0
+    assert len(window["train"]["cases"]) == 2 and len(window["holdout"]["cases"]) == 2
 
 
-def test_approve_writes_params_and_bumps_version(ws):
-    run = _run(ws)
-    done = runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=run["run_id"], note="ok")
-    assert done["status"] == "applied" and _version(ws) == 2
-    assert yaml.safe_load(ws["params"].read_text(encoding="utf-8"))["overrides"]["rules"] == [BOUNDARY_RULE]
-    apply = RunStore(ws["runs"]).load_stage(run["run_id"], "apply")
-    assert (apply["proposal_id"], apply["model_before"], apply["model_after"]) == (1, "rule@v1", "rule@v2")
-    with pytest.raises(runner.WorkflowError, match="승인 대기 상태가 아니다"):
-        runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=run["run_id"])
-    assert _version(ws) == 2
+def test_approve_registers_new_champion_and_rollback_restores(ws, awaiting):
+    done = runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], note="ok")   # 통과 안이 하나라 자동 선택
+    reg = _reg(ws)
+    assert done["status"] == "applied" and reg.versions() == [1, 2] and reg.champion() == 2
+    params = yaml.safe_load(reg.params_path(2).read_text(encoding="utf-8"))
+    assert params["version"] == 2 and params["matching"]["time_window_min"] == [0, 30, 75]
+    card = reg.card(2)
+    assert (card["parent"], card["run_id"], card["proposal_id"], card["override"]) == (1, awaiting["run_id"], 2, None)
+    assert card["verdict"]["pass"] and set(card["validation"]) == {"train", "holdout"}
+    apply = RunStore(ws["runs"]).load_stage(awaiting["run_id"], "apply")
+    assert (apply["model_before"], apply["model_after"]) == ("rule@v1", "rule@v2")
+
+    assert runner.rollback(models_dir=ws["models"], engine="rule", reason="현장 반응 나쁨") == (2, 1)
+    assert reg.champion() == 1 and reg.versions() == [1, 2]                 # 버전은 지우지 않는다
+    assert reg.history()[-1] == {**reg.history()[-1], "action": "rollback", "version": 1, "reason": "현장 반응 나쁨"}
 
 
-@pytest.mark.parametrize("proposal_id,match", [(2, "검증되지 않았다"), (3, "검증되지 않았다"), (9, "검증되지 않았다")])
-def test_approve_refuses_unvalidated_proposals(ws, proposal_id, match):
-    run = _run(ws)
-    with pytest.raises(runner.WorkflowError, match=match):
-        runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=run["run_id"], proposal_id=proposal_id)
-    assert _version(ws) == 1
+def test_failed_verdict_needs_override_reason(ws, awaiting):
+    with pytest.raises(runner.WorkflowError, match="판정을 통과하지 못했다"):
+        runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=1)
+    assert _reg(ws).versions() == [1]
+    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=1, override_reason="경계 지역 확대 방침")
+    card = _reg(ws).card(2)
+    assert card["override"] == {"reason": "경계 지역 확대 방침"} and not card["verdict"]["pass"]
+    assert yaml.safe_load(_reg(ws).params_path(2).read_text(encoding="utf-8"))["overrides"]["rules"] == [BOUNDARY_RULE]
 
 
-def test_approve_refuses_stale_run_after_params_changed(ws):
-    first, second = _run(ws), _run(ws)
-    runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=first["run_id"])
+def test_violations_block_approval_even_with_override(ws, awaiting):
+    path = ws["runs"] / awaiting["run_id"] / "4_validation.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["results"][1]["violations"] = 3                   # 규칙 엔진은 위반을 내지 않으므로 기록을 고쳐 재현한다
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(runner.WorkflowError, match="필수조건 위반 3건"):
+        runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=2, override_reason="x")
+    assert _reg(ws).versions() == [1]
+
+
+@pytest.mark.parametrize("proposal_id", [3, 4, 9])
+def test_unvalidated_proposals_cannot_be_approved(ws, awaiting, proposal_id):
+    with pytest.raises(runner.WorkflowError, match="검증되지 않았다"):
+        runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=proposal_id, override_reason="x")
+
+
+def test_champion_change_makes_pending_run_stale(ws, awaiting):
+    second = _run(ws)
+    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])
     with pytest.raises(runner.WorkflowError, match="v1에서 v2로"):
-        runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=second["run_id"])
-    assert _version(ws) == 2 and RunStore(ws["runs"]).load(second["run_id"])["status"] == "awaiting_approval"
+        runner.approve(runs_dir=ws["runs"], run_id=second["run_id"])
+    runner.rollback(models_dir=ws["models"], engine="rule", reason="back")
+    runner.approve(runs_dir=ws["runs"], run_id=second["run_id"])            # 챔피언이 다시 v1이면 유효
+    assert _reg(ws).versions() == [1, 2, 3] and _reg(ws).card(3)["parent"] == 1
 
 
-def test_reject_records_only(ws):
-    before = ws["params"].read_text(encoding="utf-8")
+def test_approve_twice_and_reject(ws, awaiting):
+    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])
+    with pytest.raises(runner.WorkflowError, match="승인 대기 상태가 아니다"):
+        runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])
+    other = _run(ws)
+    done = runner.reject(runs_dir=ws["runs"], run_id=other["run_id"], reason="부작용이 크다")
+    assert done["status"] == "rejected" and _reg(ws).versions() == [1, 2]
+
+
+def test_registry_lock_blocks_concurrent_decisions(ws, awaiting):
+    lock = ws["models"] / "rule" / ".lock"
+    lock.touch()
+    for call in (lambda: runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"]),
+                 lambda: runner.reject(runs_dir=ws["runs"], run_id=awaiting["run_id"], reason="x"),
+                 lambda: runner.rollback(models_dir=ws["models"], engine="rule", reason="x")):
+        with pytest.raises(runner.WorkflowError, match="진행 중"):
+            call()
+    lock.unlink()
+    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])
+    assert _reg(ws).champion() == 2 and not lock.exists()
+
+
+@pytest.mark.parametrize("bad_id", ["..", "../outside", "/tmp/outside", "a/../../outside"])
+def test_run_id_cannot_escape_runs_dir(ws, tmp_path, bad_id):
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "run.json").write_text('{"status": "awaiting_approval"}', encoding="utf-8")
+    ws["runs"].mkdir()
+    with pytest.raises(runner.WorkflowError, match="찾을 수 없음"):
+        runner.approve(runs_dir=ws["runs"], run_id=bad_id)
+
+
+# --- 실패 기록 ---
+
+def _failed_reason(ws):
+    [run] = RunStore(ws["runs"]).list()
+    assert run["status"] == "failed"
+    return run["history"][-1]["reason"]
+
+
+def test_overlapping_scenario_sets_fail_in_setup(ws, tmp_path):
+    ws["holdout"] = write_set(tmp_path / "overlap.yaml", "overlap", [(2, [])])
+    with pytest.raises(ValueError):
+        _run(ws, holdout_path=ws["holdout"])
+    assert "seed를 공유한다" in _failed_reason(ws)
+
+
+def test_bad_judgment_config_fails_in_setup(ws):
+    ws["settings"]["judgment"]["target"]["min_improvement"] = "high"
+    with pytest.raises(ValueError):
+        _run(ws)
+    assert _failed_reason(ws).startswith("setup: ValueError: 판정 기준 설정 오류")
+
+
+def test_missing_settings_fail_in_setup(ws):
+    del ws["settings"]["validation"]
+    with pytest.raises(KeyError):
+        _run(ws)
+    assert _failed_reason(ws).startswith("setup:")
+
+
+def test_missing_registry_fails_in_setup(ws, tmp_path):
+    with pytest.raises(Exception, match="레지스트리가 없다"):
+        _run(ws, models_dir=tmp_path / "empty")
+    assert _failed_reason(ws).startswith("setup: RegistryError")
+
+
+def test_validation_time_budget(ws):
+    ws["settings"]["validation"]["max_seconds"] = 0
     run = _run(ws)
-    done = runner.reject(runs_dir=ws["runs"], run_id=run["run_id"], reason="부작용이 크다")
-    assert done["status"] == "rejected" and done["history"][-1]["reason"] == "부작용이 크다"
-    assert ws["params"].read_text(encoding="utf-8") == before
+    assert run["status"] == "failed" and "검증 시간 예산" in run["history"][-1]["reason"]
 
 
-def test_analysis_without_submission_fails_with_reason(ws):
-    silent = FakeLLM(lambda item, n, messages, tools: {"type": "text", "text": "..."})
-    run = _run(ws, llm=silent)
-    assert run["status"] == "failed" and "결과분석" in run["history"][-1]["reason"]
-    assert RunStore(ws["runs"]).load_stage(run["run_id"], "proposals") is None
+def test_llm_call_limits_come_from_settings(ws):
+    ws["settings"]["llm"]["analyze_max_calls"] = 2      # 리허설 분석가는 제출까지 4번 호출한다
+    llm = rehearsal_llm()
+    run = _run(ws, llm=llm)
+    assert run["status"] == "failed" and "stop=max_calls" in run["history"][-1]["reason"] and len(llm.calls) == 2
 
 
 def test_no_valid_params_proposal_fails(ws):
     def policy(item, n, messages, tools):
-        names = {t["name"] for t in tools}
-        if "submit_report" in names:
+        if "submit_report" in {t["name"] for t in tools}:
             return rehearsal_llm().policy(item, n, messages, tools)
         return tool_use("submit_proposals", {"proposals": [
             {"title": "x", "kind": "params", "rationale": "x", "target_findings": ["F3"],
@@ -103,56 +211,7 @@ def test_no_valid_params_proposal_fails(ws):
     assert run["status"] == "failed" and "검증할 params 안 없음" in run["history"][-1]["reason"]
 
 
-def test_llm_call_limits_come_from_settings(ws):
-    ws["settings"]["llm"]["analyze_max_calls"] = 2      # 리허설 분석가는 제출까지 4번 호출한다
-    llm = rehearsal_llm()
-    run = _run(ws, llm=llm)
-    assert run["status"] == "failed" and "stop=max_calls" in run["history"][-1]["reason"]
-    assert len(llm.calls) == 2
-
-
 def test_unexpected_error_is_recorded_as_failed(ws):
-    def boom(item, n, messages, tools):
-        return RuntimeError("api down")
-
     with pytest.raises(RuntimeError):
-        _run(ws, llm=FakeLLM(boom))
-    [run] = RunStore(ws["runs"]).list()
-    assert run["status"] == "failed" and run["history"][-1]["reason"] == "analysis: RuntimeError: api down"
-    assert "traceback" in run["error"]
-
-
-def test_setup_errors_are_recorded_as_failed(ws):
-    del ws["settings"]["llm"]["propose_max_calls"]
-    with pytest.raises(KeyError):
-        _run(ws)
-    ws["params"].write_text("version: [", encoding="utf-8")
-    with pytest.raises(yaml.YAMLError):
-        _run(ws)
-    runs = RunStore(ws["runs"]).list()
-    assert [r["status"] for r in runs] == ["failed", "failed"]
-    assert all(r["history"][-1]["reason"].startswith("setup:") for r in runs)
-
-
-def test_approve_is_serialized_by_params_lock(ws):
-    run = _run(ws)
-    lock = ws["params"].with_name(ws["params"].name + ".lock")
-    lock.touch()                     # 다른 승인이 진행 중인 상황
-    with pytest.raises(runner.WorkflowError, match="진행 중"):
-        runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=run["run_id"])
-    with pytest.raises(runner.WorkflowError, match="진행 중"):
-        runner.reject(runs_dir=ws["runs"], run_id=run["run_id"], reason="x")
-    assert _version(ws) == 1
-    lock.unlink()
-    runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=run["run_id"])
-    assert _version(ws) == 2 and not lock.exists()
-
-
-@pytest.mark.parametrize("bad_id", ["..", "../outside", "/tmp/outside", "a/../../outside"])
-def test_run_id_cannot_escape_runs_dir(ws, tmp_path, bad_id):
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "run.json").write_text('{"status": "awaiting_approval"}', encoding="utf-8")
-    ws["runs"].mkdir()
-    with pytest.raises(runner.WorkflowError, match="찾을 수 없음"):
-        runner.approve(get_engine("rule"), runs_dir=ws["runs"], run_id=bad_id)
+        _run(ws, llm=FakeLLM(lambda item, n, messages, tools: RuntimeError("api down")))
+    assert _failed_reason(ws) == "analysis: RuntimeError: api down"
