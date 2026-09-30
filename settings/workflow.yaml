@@ -1,6 +1,16 @@
-# 워크플로우 상한. 코드에 숫자를 두지 않고 여기서 읽는다.
-# 판정 기준(목표 지표, 부작용 한도)은 M2에서 추가한다.
+# 워크플로우 상한과 판정 기준. 코드에 숫자를 두지 않고 여기서 읽는다.
 
 llm:
   analyze_max_calls: 30        # 2. 결과분석: 분석 agent의 LLM 호출 상한 (코어 analyze의 max_calls)
   propose_max_calls: 20        # 3. 개선안 도출: 개선 agent의 LLM 호출 상한 (코어 propose의 max_calls)
+
+validation:
+  max_seconds: 300             # 4. 검증 시간 예산 (모든 개선안·케이스 합계). 넘으면 실행을 failed로 남긴다
+
+# 판정 기준: 도전자가 챔피언을 대체해도 되는지. 학습용·검증용 세트 모두에서 통과해야 한다.
+# 필수조건 위반 0건(도메인 팩 validate)은 절대 기준이라 여기서 바꿀 수 없다.
+judgment:
+  target: {metric: assignment_rate, min_improvement: 0.01}   # 세트 평균 Δ가 이 값 이상 (높을수록 좋은 지표)
+  guards:                                                     # 부작용 한도 (세트 평균 Δ 기준)
+    desired_time_match_rate: {max_drop: 0.05}                 # 희망시간 일치율 하락 폭
+    avg_travel_min: {max_increase: 2.0}                       # 평균 이동시간 증가 폭 (분)

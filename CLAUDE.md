@@ -45,8 +45,8 @@ runs/            실행 결과·DB·LLM 캐시 (git 제외)
 | 1. 실행 | 코드 | `pack.solve`, `validate`, `metrics` |
 | 2. 결과분석 | AI + 코드 | `analyze`, `Aggregator`, 근거 검사 |
 | 3. 개선안 도출 | AI + 코드 | `propose`, `params_errors` |
-| 4. 검증(비교) | 코드 | `simulate_params` (M2에서 여러 seed·검증용 세트로 확장) |
-| 5. 개선적용 | 사람 + 코드 | M1: `write_params`로 이 레포 params 파일에 반영(version +1). M2부터 레지스트리에 새 버전 등록 |
+| 4. 검증(비교) | 코드 | `simulate_params`를 학습용·검증용 세트의 케이스마다 실행, `workflow/judge.py`로 판정 |
+| 5. 개선적용 | 사람 + 코드 | 레지스트리(`modelreg`)에 새 버전 등록(부모 복사 + `write_params`), 챔피언 지정. 되돌리기는 `rollback` |
 
 ## 기술 스택
 
@@ -65,12 +65,16 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 ```bash
 pip install -e ".[dev]"      # 코어 포함 설치 (pyproject.toml에 코어를 커밋 1343534로 고정)
 pytest
-python -m workflow run --engine rule --seed 42 --faults P1,P2,P3,P4 --rehearsal   # 가짜 LLM으로 한 바퀴, 승인 대기에서 정지
-python -m workflow status [<run_id>]                               # 실행 목록 / 단계별 결과
-python -m workflow approve <run_id> [--proposal N] [--note ...]    # 사람 승인 (승인 가능 안이 하나면 --proposal 생략)
+python -m workflow run --engine rule --rehearsal                   # 가짜 LLM으로 한 바퀴 (scenarios/train·holdout), 승인 대기에서 정지
+python -m workflow status [<run_id>]                               # 실행 목록 / 단계별 결과·판정
+python -m workflow approve <run_id> [--proposal N] [--note ...]    # 사람 승인 (판정 통과 안이 하나면 --proposal 생략)
+python -m workflow approve <run_id> --proposal N --override-verdict --reason ...   # 판정 불통과 안을 사유와 함께 승인 (위반 안은 불가)
 python -m workflow reject <run_id> --reason ...                    # 사람 반려 (기록만)
+python -m workflow models [--engine rule]                          # 모델 버전·챔피언 이력
+python -m workflow rollback [--engine rule] [--to N] --reason ...  # 챔피언 되돌리기 (기본: 부모 버전)
 ```
-레포 루트에서 실행한다 (`--rehearsal`이 `tests/fake_llm.py`를 쓴다). 공통 옵션 `--runs-dir`, run 옵션 `--params`, `--settings`로 경로를 바꾼다.
+레포 루트에서 실행한다 (`--rehearsal`이 `tests/fake_llm.py`를 쓴다). 공통 옵션 `--runs-dir`, `--models-dir`, run 옵션 `--train`, `--holdout`, `--settings`로 경로를 바꾼다.
+승인·되돌리기는 `models/`를 바꾼다. git 커밋은 사람이 확인하고 직접 한다.
 (명령이 바뀌면 이 섹션을 갱신한다.)
 
 ## 작업 방식

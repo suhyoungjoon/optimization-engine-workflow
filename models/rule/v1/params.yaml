@@ -1,5 +1,5 @@
-# 규칙 엔진 params (이 레포 소유). 시작 버전은 코어 domains/dispatch/params.yaml의 사본이다.
-# 승인(python -m workflow approve)만 이 파일을 고친다 (코어 write_params: version +1, 주석 보존).
+# 규칙 엔진 params (모델 레지스트리 버전). v1은 코어 domains/dispatch/params.yaml의 사본이다.
+# 버전 파일은 만든 뒤 바꾸지 않는다. 새 버전은 승인(python -m workflow approve)이 부모 버전을 복사해 만든다.
 # 개선 루프(improvement)는 각 섹션의 bounds 안에서만 값을 바꿀 수 있다.
 # bounds 형식: {키: [min, max]}. 값이 리스트·딕셔너리면 모든 원소에 같은 범위를 적용한다.
 # docs 형식: {키: 설명}. 화면과 개선 agent에 그대로 보인다. bounds·docs는 개선안으로 바꿀 수 없다.

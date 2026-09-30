@@ -1,0 +1,14 @@
+# 검증용 세트: 판정에만 쓴다 (분석·개선안 도출은 보지 않는다). 학습용과 seed가 겹치면 안 된다.
+# 절반은 학습용과 같은 결함 조합, 절반은 학습용에 없는 조합이다 (결함 분포가 바뀌어도 효과가 남는지 본다).
+name: holdout
+cases:
+  - {seed: 101, faults: [P1, P2, P3, P4]}
+  - {seed: 102, faults: [P1, P2, P3, P4]}
+  - {seed: 103, faults: [P1, P2, P3, P4]}
+  - {seed: 104, faults: [P1, P2, P3, P4]}
+  - {seed: 105, faults: [P1, P2, P3, P4]}
+  - {seed: 106, faults: [P1, P2, P3]}
+  - {seed: 107, faults: [P1, P2, P3]}
+  - {seed: 108, faults: [P1, P2, P3]}
+  - {seed: 109, faults: []}
+  - {seed: 110, faults: []}
