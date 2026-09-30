@@ -46,7 +46,7 @@ runs/            실행 결과·DB·LLM 캐시 (git 제외)
 | 2. 결과분석 | AI + 코드 | `analyze`, `Aggregator`, 근거 검사 |
 | 3. 개선안 도출 | AI + 코드 | `propose`, `params_errors` |
 | 4. 검증(비교) | 코드 | `simulate_params` (M2에서 여러 seed·검증용 세트로 확장) |
-| 5. 개선적용 | 사람 + 코드 | `write_params` 대신 레지스트리에 새 버전 등록 |
+| 5. 개선적용 | 사람 + 코드 | M1: `write_params`로 이 레포 params 파일에 반영(version +1). M2부터 레지스트리에 새 버전 등록 |
 
 ## 기술 스택
 
@@ -63,11 +63,14 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 ## 명령어
 
 ```bash
-pip install -e ".[dev]"      # 코어 포함 설치 (pyproject.toml에 코어를 고정 ref로 명시)
+pip install -e ".[dev]"      # 코어 포함 설치 (pyproject.toml에 코어를 커밋 1343534로 고정)
 pytest
-python -m workflow run --engine rule --scenario train --rehearsal   # 가짜 LLM으로 한 바퀴
-python -m workflow approve <run_id>                                # 사람 승인
+python -m workflow run --engine rule --seed 42 --faults P1,P2,P3,P4 --rehearsal   # 가짜 LLM으로 한 바퀴, 승인 대기에서 정지
+python -m workflow status [<run_id>]                               # 실행 목록 / 단계별 결과
+python -m workflow approve <run_id> [--proposal N] [--note ...]    # 사람 승인 (승인 가능 안이 하나면 --proposal 생략)
+python -m workflow reject <run_id> --reason ...                    # 사람 반려 (기록만)
 ```
+레포 루트에서 실행한다 (`--rehearsal`이 `tests/fake_llm.py`를 쓴다). 공통 옵션 `--runs-dir`, run 옵션 `--params`, `--settings`로 경로를 바꾼다.
 (명령이 바뀌면 이 섹션을 갱신한다.)
 
 ## 작업 방식
