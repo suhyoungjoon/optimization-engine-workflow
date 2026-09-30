@@ -81,3 +81,13 @@ def test_missing_registry(tmp_path):
             pass
     with pytest.raises(RegistryError, match="이미 버전이 있다"):
         Registry(ROOT / "models", "rule").init(ROOT / "models" / "rule" / "v1" / "params.yaml")
+
+
+def test_failed_register_leaves_no_partial_version(reg, monkeypatch):
+    def boom(path, proposal):
+        raise ValueError("write failed")
+
+    monkeypatch.setattr("modelreg.write_params", boom)
+    with pytest.raises(ValueError):
+        reg.register(1, TW, {})
+    assert reg.versions() == [1] and not (reg.root / "v2").exists()

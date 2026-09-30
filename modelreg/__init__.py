@@ -100,12 +100,16 @@ class Registry:
         version = max(self.versions()) + 1
         d = self.root / f"v{version}"
         d.mkdir()
-        path = d / "params.yaml"
-        shutil.copyfile(parent_path, path)
-        write_params(path, proposal)
-        _set_version(path, version)
-        _write_json(d / "card.json", {"version": version, "engine": self.engine, "parent": parent,
-                                      "created_at": _now(), **card})
+        try:
+            path = d / "params.yaml"
+            shutil.copyfile(parent_path, path)
+            write_params(path, proposal)
+            _set_version(path, version)
+            _write_json(d / "card.json", {"version": version, "engine": self.engine, "parent": parent,
+                                          "created_at": _now(), **card})
+        except BaseException:
+            shutil.rmtree(d, ignore_errors=True)   # 반쯤 만든 버전을 남기지 않는다
+            raise
         return version
 
     def set_champion(self, version: int, action: str, **info) -> None:

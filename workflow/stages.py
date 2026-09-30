@@ -13,7 +13,7 @@ from core import analyze, apply_params, check_params, finding_slices, params_err
 
 from engines.base import Engine
 
-from .compare import compare_cases
+from .compare import check_deadline, compare_cases
 from .judge import judge
 
 # 3단계 개선안 상태: 검증 대상은 valid뿐이다
@@ -91,7 +91,12 @@ def validation_stage(engine: Engine, params: dict, proposals: list[dict], report
     """
     deadline = time.monotonic() + max_seconds
     pack = engine.pack_factory(params)
-    instances = {name: [(c, pack.generate(c["seed"], c["faults"])[0]) for c in s["cases"]] for name, s in sets.items()}
+    instances = {}
+    for name, s in sets.items():   # 인스턴스 생성도 예산에 넣는다
+        instances[name] = []
+        for c in s["cases"]:
+            check_deadline(deadline)
+            instances[name].append((c, pack.generate(c["seed"], c["faults"])[0]))
     slices = finding_slices(report)
     results = []
     for p in proposals:

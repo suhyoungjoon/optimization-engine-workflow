@@ -13,14 +13,19 @@ class BudgetExceeded(Exception):
     """settings/workflow.yaml의 validation.max_seconds를 넘겼다."""
 
 
+def check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() > deadline:
+        raise BudgetExceeded("검증 시간 예산을 넘겼다 (settings/workflow.yaml validation.max_seconds)")
+
+
 def compare_cases(pack_factory, params: dict, candidate: dict, instances: list[tuple[dict, object]],
                   slices: dict | None = None, deadline: float | None = None) -> dict:
     """instances: [(케이스 {seed, faults}, 인스턴스)]. deadline: time.monotonic() 기준."""
     rows = []
     for case, instance in instances:
-        if deadline is not None and time.monotonic() > deadline:
-            raise BudgetExceeded("검증 시간 예산을 넘겼다 (settings/workflow.yaml validation.max_seconds)")
+        check_deadline(deadline)
         sim = simulate_params(pack_factory, instance, params, candidate, slices)
+        check_deadline(deadline)   # 마지막 케이스가 예산을 넘겨도 결과로 쓰지 않는다
         rows.append({**case, "before": sim["before"], "after": sim["after"],
                      "violations_after": sim["violations_after"], "slices": sim["slices"],
                      "seconds": round(sim["seconds"], 3)})

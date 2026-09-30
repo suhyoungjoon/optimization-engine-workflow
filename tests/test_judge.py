@@ -16,6 +16,9 @@ def test_config_validation():
     assert check_config({}) and check_config({"target": {"metric": "rate", "min_improvement": "x"}})
     assert check_config({**CFG, "guards": {"m": {"max_drop": 0.1, "max_increase": 1}}})
     assert check_config({**CFG, "guards": {"m": {"max_drop": -0.1}}})
+    assert check_config({"target": {"metric": "rate", "min_improvement": True}})        # YAML true
+    assert check_config({**CFG, "guards": {"m": {"max_drop": False}}})
+    assert check_config({"target": {"metric": "rate", "min_improvement": float("nan")}})
 
 
 def test_pass_requires_both_sets():

@@ -25,3 +25,13 @@ def test_summarize_means_and_counts():
 def test_budget_is_checked_between_cases():
     with pytest.raises(BudgetExceeded):
         compare_cases(None, {}, {}, [({"seed": 1, "faults": []}, None)], deadline=time.monotonic() - 1)
+
+
+def test_budget_is_checked_after_the_last_case(monkeypatch):
+    def slow(*args, **kwargs):
+        time.sleep(0.05)
+        return {"before": {}, "after": {}, "violations_after": 0, "slices": {}, "seconds": 0.05}
+
+    monkeypatch.setattr("workflow.compare.simulate_params", slow)
+    with pytest.raises(BudgetExceeded):
+        compare_cases(None, {}, {}, [({"seed": 1, "faults": []}, None)], deadline=time.monotonic() + 0.01)

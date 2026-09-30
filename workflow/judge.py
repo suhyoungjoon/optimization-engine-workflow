@@ -6,10 +6,16 @@
 - 학습용·검증용 세트 모두에서 통과해야 통과다. 학습용에서만 목표를 채우면 overfit으로 표시한다.
 """
 
+import math
 from numbers import Number
 
 EPS = 1e-9
 SET_LABELS = {"train": "학습용", "holdout": "검증용"}
+
+
+def _number(v) -> bool:
+    """bool은 Number의 하위 타입이라 따로 막는다 (YAML의 true/false가 임계값으로 들어오지 않게)."""
+    return isinstance(v, Number) and not isinstance(v, bool) and math.isfinite(v)
 
 
 def check_config(cfg: dict) -> list[str]:
@@ -17,13 +23,13 @@ def check_config(cfg: dict) -> list[str]:
     target = (cfg or {}).get("target") or {}
     if not isinstance(target.get("metric"), str):
         errors.append("judgment.target.metric이 필요하다")
-    if not isinstance(target.get("min_improvement"), Number):
+    if not _number(target.get("min_improvement")):
         errors.append("judgment.target.min_improvement는 숫자여야 한다")
     for metric, limit in ((cfg or {}).get("guards") or {}).items():
         keys = set(limit or {})
         if len(keys) != 1 or not keys <= {"max_drop", "max_increase"}:
             errors.append(f"judgment.guards.{metric}에는 max_drop 또는 max_increase 하나만 쓴다")
-        elif not isinstance(next(iter(limit.values())), Number) or next(iter(limit.values())) < 0:
+        elif not _number(next(iter(limit.values()))) or next(iter(limit.values())) < 0:
             errors.append(f"judgment.guards.{metric} 한도는 0 이상의 숫자여야 한다")
     return errors
 
