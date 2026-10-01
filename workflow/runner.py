@@ -19,6 +19,7 @@ from engines.base import Engine
 from modelreg import Registry, RegistryError
 
 from . import stages
+from .config import for_engine
 from .compare import BudgetExceeded
 from .judge import check_config
 from .scenarios import check_disjoint, load_set
@@ -87,6 +88,7 @@ def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path
         params = engine.load_params(registry.params_path(champion))
         sets = {"train": load_set(train_path), "holdout": load_set(holdout_path)}
         check_disjoint(sets["train"], sets["holdout"])
+        settings = for_engine(settings, engine.name)   # 엔진별 예외(검증 예산 등)를 덮어쓴다
         analyze_calls, propose_calls = settings["llm"]["analyze_max_calls"], settings["llm"]["propose_max_calls"]
         max_seconds = settings["validation"]["max_seconds"]
         judgment = settings["judgment"]
@@ -94,7 +96,7 @@ def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path
         if errors:
             raise ValueError("판정 기준 설정 오류: " + "; ".join(errors))
         store.update(run_id, model=model_name(engine.name, champion), champion_version=champion,
-                     scenarios=sets)
+                     scenarios=sets, limits={"llm": settings["llm"], "validation": settings["validation"]})
 
         progress = _progress_writer(store, run_id)
         stage = "run"

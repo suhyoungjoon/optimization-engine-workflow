@@ -1,10 +1,11 @@
 """리허설: API 키 없이 가짜 LLM으로 워크플로우를 한 바퀴 돌린다. 수치는 AI 품질과 무관하다 (흐름 확인용).
 
 - 분석 agent: 집계 도구로 B지점 오전, C지점 승주, 관할 경계 여부 구간을 조회하고 발견 3개(F1~F3)를 낸다.
-- 개선 agent: 경계 지역 구간 조건을 한 번 시뮬레이션한 뒤 네 안을 낸다.
+- 개선 agent: params를 조회하고 경계 지역 구간 조건을 한 번 시뮬레이션한 뒤 네 안을 낸다 (solver면 다섯).
   1) 경계 지역만 3단계 지역 범위 +1km (valid): 경계 지역 수요(P4)가 있는 케이스에서만 효과, 희망시간 일치율 하락이 크다
   2) 3단계 시간 허용 오차 60→75분 (valid): 결함 조합이 달라도 효과가 남는다
   3) 전역 9km (허용 범위 밖, invalid) 4) 명세 수정 (unsupported)
+  5) solver 엔진만: 희망시각 차이 감점 5→8 (목적함수 가중치)
 
 가짜 LLM은 tests/fake_llm.py(코어 레포 tests/의 사본)를 쓰므로 레포 루트에서 실행한다.
 """
@@ -49,9 +50,20 @@ def _analyst(n, messages):
     ]})
 
 
-def _proposer(n):
+SOLVER_WEIGHT = {"params_changes": [{"path": "objective.time_diff_per_min", "value": 8}]}
+
+
+def _proposer(n, messages):
     if n == 0:
+        return tool_use("get_params", {})
+    if n == 1:
         return tool_use("simulate_params", {"override_rules": [BOUNDARY_RULE]})
+    params = _tool_outputs(messages)[0]["params"]
+    solver_only = [   # solver 엔진(objective 섹션이 있을 때)에만: 목적함수 가중치 조정
+        {"title": "희망시각 차이 감점 5→8", "kind": "params", "target_findings": ["F1"],
+         "rationale": "배정 수를 크게 줄이지 않으면서 희망시간 일치를 더 지키게 한다",
+         "expected_effect": "희망시간 일치율 상승, 할당 소폭 하락", **SOLVER_WEIGHT},
+    ] if "objective" in params else []
     return tool_use("submit_proposals", {"proposals": [
         {"title": "경계 지역만 3단계 지역 범위 +1km", "kind": "params", "target_findings": ["F3"],
          "rationale": "경계 지역 실패는 대부분 OUT_OF_AREA. 전역 완화 대신 경계 구간에만 적용한다",
@@ -67,6 +79,7 @@ def _proposer(n):
          "rationale": "명세 수정 안은 이 워크플로우에서 검증하지 않음을 보여주기 위한 제안",
          "spec_edits": [{"section": "예외 처리",
                          "text": "- 관할 경계 지역 지시서는 3단계 매칭까지 모두 시도한 뒤에만 미배정으로 남긴다"}]},
+        *solver_only,
     ]})
 
 
@@ -77,7 +90,7 @@ def policy(item, n, messages, tools):
     if "submit_report" in names:
         return _analyst(n, messages)
     if "submit_proposals" in names:
-        return _proposer(n)
+        return _proposer(n, messages)
     raise AssertionError(f"리허설 정책이 모르는 호출: {sorted(names)}")
 
 

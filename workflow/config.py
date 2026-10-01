@@ -4,6 +4,7 @@
 """
 
 import copy
+import re
 from numbers import Number
 from pathlib import Path
 
@@ -14,7 +15,21 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from .judge import check_config
 from .scenarios import check_disjoint, parse_set
 
-EDITABLE = ("llm", "validation", "judgment")
+EDITABLE = ("llm", "validation", "judgment", "scenarios", "engines")
+SET_NAME = re.compile(r"^[a-z0-9_]+$")
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    out = copy.deepcopy(base)
+    for k, v in (over or {}).items():
+        out[k] = _deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else copy.deepcopy(v)
+    return out
+
+
+def for_engine(settings: dict, engine: str) -> dict:
+    """엔진별 예외(engines.<엔진>)를 기본값에 덮어쓴 설정. engines 섹션은 빠진다."""
+    base = {k: v for k, v in settings.items() if k != "engines"}
+    return _deep_merge(base, (settings.get("engines") or {}).get(engine) or {})
 
 
 def _positive_int(v) -> bool:
@@ -22,6 +37,17 @@ def _positive_int(v) -> bool:
 
 
 def settings_errors(settings: dict) -> list[str]:
+    """기본값과, 엔진별 예외를 덮어쓴 각 엔진의 설정을 모두 검사한다."""
+    engines = settings.get("engines") or {}
+    if not isinstance(engines, dict) or not all(isinstance(v, dict) for v in engines.values()):
+        return ["engines는 {엔진: {섹션: 값}} 형태여야 한다"]
+    errors = _section_errors(for_engine(settings, ""))
+    for name in engines:
+        errors += [f"engines.{name}: {e}" for e in _section_errors(for_engine(settings, name))]
+    return errors
+
+
+def _section_errors(settings: dict) -> list[str]:
     errors = []
     llm = settings.get("llm") or {}
     for key in ("analyze_max_calls", "propose_max_calls"):
@@ -30,6 +56,10 @@ def settings_errors(settings: dict) -> list[str]:
     seconds = (settings.get("validation") or {}).get("max_seconds")
     if not (isinstance(seconds, Number) and not isinstance(seconds, bool) and seconds > 0):
         errors.append("validation.max_seconds는 0보다 큰 숫자여야 한다")
+    scen = settings.get("scenarios") or {}
+    for key in ("train", "holdout"):
+        if not isinstance(scen.get(key), str) or not SET_NAME.match(scen[key]):
+            errors.append(f"scenarios.{key}는 시나리오 세트 이름(영문 소문자·숫자·_)이어야 한다")
     return errors + check_config(settings.get("judgment") or {})
 
 
@@ -69,8 +99,8 @@ def save_settings(path: str | Path, updates: dict) -> dict:
     return load_settings(path)
 
 
-def save_set(path: str | Path, cases: list[dict], other_path: str | Path, known_faults: set[str]) -> dict:
-    """시나리오 세트의 케이스 목록을 바꾼다. 형식, 알려진 결함, 다른 세트와의 seed 중복을 검사한다."""
+def save_set(path: str | Path, cases: list[dict], other_path: str | Path | None, known_faults: set[str]) -> dict:
+    """시나리오 세트의 케이스 목록을 바꾼다. 형식, 알려진 결함, 짝 세트(학습용↔검증용)와의 seed 중복을 검사한다."""
     path = Path(path)
     ry = YAML()
     doc = ry.load(path.read_text(encoding="utf-8"))
@@ -78,8 +108,9 @@ def save_set(path: str | Path, cases: list[dict], other_path: str | Path, known_
     unknown = sorted({f for c in candidate["cases"] for f in c["faults"]} - known_faults)
     if unknown:
         raise ValueError(f"알 수 없는 결함: {unknown} (가능: {sorted(known_faults)})")
-    other = parse_set(yaml.safe_load(Path(other_path).read_text(encoding="utf-8")) or {}, other_path)
-    check_disjoint(candidate, other)
+    if other_path is not None:
+        other = parse_set(yaml.safe_load(Path(other_path).read_text(encoding="utf-8")) or {}, other_path)
+        check_disjoint(candidate, other)
     seq = CommentedSeq()
     for c in candidate["cases"]:
         item = CommentedMap(seed=c["seed"], faults=CommentedSeq(c["faults"]))
