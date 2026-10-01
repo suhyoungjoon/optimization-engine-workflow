@@ -26,15 +26,15 @@
 ## 디렉터리 구조
 
 ```
-workflow/        워크플로우 상태 머신, 단계(stage) 구현, CLI
+workflow/        워크플로우 상태 머신, 단계(stage) 구현, CLI, 워크플로우 정의(pipeline.yaml: 화면 다이어그램의 기준)
 engines/         엔진 어댑터 (rule: 코어 규칙 엔진 래핑, solver: M4 이후)
 modelreg/        모델 레지스트리: 버전별 params 스냅샷, 모델 카드, 챔피언 지정, 되돌리기
 scenarios/       시나리오 세트 정의 (학습용·검증용 seed·결함 조합)
 settings/        workflow.yaml(상한·판정 기준), llm.yaml
 models/          레지스트리 데이터 (엔진별 버전 디렉터리)
-ui/              워크플로우 화면 (M3)
+ui/              워크플로우 화면 (M3): FastAPI(app.py) + 빌드 없는 단일 페이지(static/)
 tests/           pytest (fake_llm.py는 코어 레포 tests/에서 복사)
-docs/            plan.md, handoff.md(사본)
+docs/            plan.md, handoff.md(사본), extensibility.md(단계·agent 확장 방향, 미구현)
 runs/            실행 결과·DB·LLM 캐시 (git 제외)
 ```
 
@@ -50,10 +50,11 @@ runs/            실행 결과·DB·LLM 캐시 (git 제외)
 
 ## 기술 스택
 
-Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LLM은 코어의 `AnthropicClient`·`run_tool_loop`을 쓴다. UI는 M3에서 결정 (코어 레포의 React UI는 재사용하지 않음).
+Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LLM은 코어의 `AnthropicClient`·`run_tool_loop`을 쓴다. UI는 FastAPI(코어가 설치)와 빌드 없는 순수 JS 단일 페이지 (코어 레포의 React UI는 재사용하지 않음).
 
 ## 개발 규칙
 
+- 단계를 바꾸거나 더하면 `workflow/pipeline.yaml`도 함께 고친다 (runner 순서와 다르면 `tests/test_pipeline.py`가 실패한다).
 - API 키는 `.env`. `.env`, `runs/`는 커밋하지 않는다.
 - LLM 경로는 가짜 LLM(`tests/fake_llm.py`) 테스트를 먼저 만든다. 실제 API 실행은 사람이 요청할 때만.
 - 결정적인 부분(시나리오 생성, 비교 판정, 레지스트리)은 테스트를 먼저 작성한다.
@@ -72,6 +73,7 @@ python -m workflow approve <run_id> --proposal N --override-verdict --reason ...
 python -m workflow reject <run_id> --reason ...                    # 사람 반려 (기록만)
 python -m workflow models [--engine rule]                          # 모델 버전·챔피언 이력
 python -m workflow rollback [--engine rule] [--to N] --reason ...  # 챔피언 되돌리기 (기본: 부모 버전)
+python -m ui                                                       # 워크플로우 화면 http://127.0.0.1:8765 (리허설 실행만 허용)
 ```
 레포 루트에서 실행한다 (`--rehearsal`이 `tests/fake_llm.py`를 쓴다). 공통 옵션 `--runs-dir`, `--models-dir`, run 옵션 `--train`, `--holdout`, `--settings`로 경로를 바꾼다.
 승인·되돌리기는 `models/`를 바꾼다. git 커밋은 사람이 확인하고 직접 한다.

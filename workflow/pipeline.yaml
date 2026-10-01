@@ -1,0 +1,91 @@
+# 워크플로우 정의: 단계, 주체, 입력·산출물, 코드 위치. 화면의 다이어그램·실행 화면과 CLI가 이 파일을 읽는다.
+# 실행 순서는 workflow/runner.py가 정한다. 둘이 어긋나면 tests/test_pipeline.py가 실패한다.
+# 확장(단계·agent 추가) 방향은 docs/extensibility.md.
+
+inputs:                          # 워크플로우 밖에서 들어오는 것
+  - key: champion
+    label: 챔피언 모델
+    detail: 현재 챔피언 버전의 params (모델 레지스트리)
+    source: models/<engine>/
+    link: "#/models"
+  - key: scenarios
+    label: 시나리오 세트
+    detail: 학습용·검증용 {seed, 결함} 케이스
+    source: scenarios/train.yaml, scenarios/holdout.yaml
+    link: "#/settings"
+  - key: llm
+    label: LLM
+    detail: 분석·개선안 도출 agent의 모델 (리허설은 가짜 LLM)
+    source: settings/llm.yaml
+  - key: judgment
+    label: 판정 기준
+    detail: 목표 지표, 부작용 한도, 필수조건 위반 0건(절대 기준)
+    source: settings/workflow.yaml (judgment)
+    link: "#/settings"
+
+artifacts:                       # 단계가 만들어 다음 단계에 넘기는 것 (runs/<run_id>/)
+  - {key: decisions, label: 결정 레코드·지표, file: "1_run.json, decisions.json"}
+  - {key: report, label: 분석 리포트, file: 2_analysis.json}
+  - {key: candidates, label: 개선안, file: 3_proposals.json}
+  - {key: verdicts, label: 비교·판정, file: 4_validation.json}
+  - {key: model_version, label: 새 모델 버전, file: "models/<engine>/v<N>/, 5_apply.json"}
+
+stages:                          # 순서대로
+  - key: run
+    label: 실행
+    actor: code                  # ai: AI + 코드, code: 코드, human: 사람 + 코드
+    kind: code                   # code | agent | gate
+    impl: workflow.stages.run_stage
+    reads: [champion, scenarios]
+    writes: [decisions]
+    settings: []
+    reuses: [pack.solve, pack.validate, pack.metrics]
+    does: 챔피언 params로 학습용 세트의 모든 케이스를 풀고, 도메인 팩의 validate()로 필수조건을 독립 검증한다. 첫 케이스가 분석·개선안 도출의 대표 케이스다.
+  - key: analysis
+    label: 결과분석
+    actor: ai
+    kind: agent
+    impl: workflow.stages.analysis_stage
+    reads: [decisions, llm]
+    writes: [report]
+    settings: [llm.analyze_max_calls]
+    reuses: [core.analyze, core.Aggregator, 근거 검사]
+    does: 분석 agent가 집계 도구로 결정 레코드를 조회해 실패 패턴과 원인 가설을 낸다. 수치가 인용한 도구 결과에 없으면 코드가 발견을 뺀다.
+  - key: proposals
+    label: 개선안 도출
+    actor: ai
+    kind: agent
+    impl: workflow.stages.proposal_stage
+    reads: [report, champion, llm]
+    writes: [candidates]
+    settings: [llm.propose_max_calls]
+    reuses: [core.propose, core.params_errors]
+    does: 개선 agent가 params 변경안을 제안하고, 코드가 허용 범위(bounds)와 구조를 다시 검사해 검증 대상(valid)을 가른다.
+  - key: validation
+    label: 검증(비교)
+    actor: code
+    kind: code
+    impl: workflow.stages.validation_stage
+    reads: [candidates, report, scenarios, judgment]
+    writes: [verdicts]
+    settings: [validation.max_seconds, judgment]
+    reuses: [core.simulate_params]
+    does: 검증 대상 안마다 챔피언과 도전자를 학습용·검증용의 모든 케이스에서 비교하고 판정한다. 두 세트 모두 통과해야 판정 통과다.
+  - key: apply
+    label: 개선적용
+    actor: human
+    kind: gate                   # 고정 노드: 확장으로 빼거나 건너뛸 수 없다 (핵심 원칙 2)
+    impl: workflow.runner.approve
+    reads: [verdicts, candidates]
+    writes: [model_version]
+    settings: []
+    reuses: [core.write_params, modelreg.Registry]
+    does: 여기서 멈춘다. 사람이 승인하면 새 버전을 레지스트리에 등록하고 챔피언으로 지정한다. 반려하면 기록만 남긴다. 사람이 AI 안의 값을 고쳐 다시 검증할 수 있다.
+    outcomes:
+      - {key: approve, label: 승인, to: model_version, detail: 새 버전 등록, 챔피언 지정}
+      - {key: reject, label: 반려, detail: 기록만 남김}
+      - {key: revise, label: 값 수정, to_stage: validation, detail: AI 안의 값만 고쳐 다시 검증}
+
+loops:                           # 실행을 넘어 이어지는 흐름
+  - {from: model_version, to: champion, label: 다음 실행의 챔피언}
+  - {from: champion, to: champion, label: 되돌리기 (rollback), detail: 이전 버전을 다시 챔피언으로}

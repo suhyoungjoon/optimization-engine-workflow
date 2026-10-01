@@ -17,13 +17,15 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "httpx>=0.27",             # 화면 API 테스트 (FastAPI TestClient)
 ]
 
 [tool.setuptools.packages.find]
-include = ["workflow*", "engines*", "modelreg*"]   # core·domains·api·scripts·configs는 코어가 쓰는 이름이라 만들지 않는다
+include = ["workflow*", "engines*", "modelreg*", "ui*"]   # core·domains·api·scripts·configs는 코어가 쓰는 이름이라 만들지 않는다
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml"]
+"ui" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

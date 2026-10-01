@@ -20,7 +20,11 @@ from .judge import judge
 VALID, INVALID, UNSUPPORTED = "valid", "invalid", "unsupported"
 
 
-def run_stage(engine: Engine, params: dict, cases: list[dict]) -> tuple:
+def _no_progress(stage: str, done: int, total: int, detail: str = "") -> None:
+    pass
+
+
+def run_stage(engine: Engine, params: dict, cases: list[dict], progress=_no_progress) -> tuple:
     """1. 실행: 챔피언 params로 학습용 케이스마다 solve → validate → metrics.
 
     (pack, 대표 인스턴스, 대표 결정, 결과). 대표 케이스(첫 케이스)는 2·3단계(분석·개선안 도출)에 쓴다.
@@ -45,6 +49,7 @@ def run_stage(engine: Engine, params: dict, cases: list[dict]) -> tuple:
         })
         if representative is None:
             representative = (instance, decisions)
+        progress("run", len(rows), len(cases), f"학습용 seed {case['seed']}")
     metrics = [m for m in rows[0]["metrics"] if all(m in r["metrics"] for r in rows)]
     result = {
         "cases": rows,
@@ -83,7 +88,7 @@ def proposal_stage(engine: Engine, pack, instance, params: dict, report: dict, l
 
 
 def validation_stage(engine: Engine, params: dict, proposals: list[dict], report: dict, sets: dict[str, dict],
-                     judgment: dict, max_seconds: float) -> dict:
+                     judgment: dict, max_seconds: float, progress=_no_progress) -> dict:
     """4. 검증(비교): valid 안마다 챔피언 대 도전자를 학습용·검증용 세트의 모든 케이스에서 비교하고 판정한다.
 
     sets: {"train": 세트, "holdout": 세트}. 인스턴스는 세트마다 한 번만 만든다.
@@ -91,20 +96,28 @@ def validation_stage(engine: Engine, params: dict, proposals: list[dict], report
     """
     deadline = time.monotonic() + max_seconds
     pack = engine.pack_factory(params)
+    valid = [p for p in proposals if p["state"] == VALID]
+    n_cases = sum(len(s["cases"]) for s in sets.values())
+    total, done = n_cases * (1 + len(valid)), 0   # 인스턴스 생성 + 안마다 케이스 비교
     instances = {}
     for name, s in sets.items():   # 인스턴스 생성도 예산에 넣는다
         instances[name] = []
         for c in s["cases"]:
             check_deadline(deadline)
             instances[name].append((c, pack.generate(c["seed"], c["faults"])[0]))
+            done += 1
+            progress("validation", done, total, f"시나리오 생성 seed {c['seed']}")
     slices = finding_slices(report)
     results = []
-    for p in proposals:
-        if p["state"] != VALID:
-            continue
+    for p in valid:
         candidate = apply_params(params, p["proposal"])
-        compared = {name: compare_cases(engine.pack_factory, params, candidate, insts, slices, deadline)
-                    for name, insts in instances.items()}
+        compared = {}
+        for name, insts in instances.items():
+            def on_case(case, name=name, pid=p["id"]):
+                nonlocal done
+                done += 1
+                progress("validation", done, total, f"개선안 {pid} {name} seed {case['seed']}")
+            compared[name] = compare_cases(engine.pack_factory, params, candidate, insts, slices, deadline, on_case)
         verdict = judge(judgment, {name: c["summary"] for name, c in compared.items()})
         results.append({"id": p["id"], "title": p["proposal"].get("title"), **compared, "verdict": verdict,
                         "violations": sum(c["summary"]["violations"] for c in compared.values())})
