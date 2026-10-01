@@ -13,7 +13,6 @@ from core import list_faults, load_config
 from engines import ENGINES, get_engine
 from modelreg import Registry, RegistryError
 from workflow import config, runner
-from workflow.judge import check_config
 from workflow.pipeline import default_pipeline
 from workflow.rehearsal import rehearsal_llm
 from workflow.state import FINAL
@@ -226,9 +225,7 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
 
     @app.put("/api/settings")
     def put_settings(body: dict = Body(...)):
-        if "judgment" in body and check_config(body["judgment"]):
-            raise HTTPException(400, "; ".join(check_config(body["judgment"])))
-        try:
+        try:   # 형식·판정 기준 검사는 save_settings가 한다
             values = config.save_settings(workflow_yaml, body)
         except ValueError as exc:
             fail(exc)

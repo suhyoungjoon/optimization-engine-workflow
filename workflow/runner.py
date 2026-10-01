@@ -51,13 +51,14 @@ def model_name(engine_name: str, version: int) -> str:
 
 def _progress_writer(store: RunStore, run_id: str, min_interval: float = 0.2):
     """단계 진행을 run.json의 progress에 남긴다 (화면이 읽는다). 너무 잦은 쓰기는 건너뛴다."""
-    last = [0.0]
+    last = {"at": 0.0, "stage": None}
 
     def write(stage: str, done: int, total: int, detail: str = "") -> None:
         t = time.monotonic()
-        if done < total and t - last[0] < min_interval:
+        routine = 0 < done < total and stage == last["stage"]   # 단계의 시작·끝과 단계 전환은 건너뛰지 않는다
+        if routine and t - last["at"] < min_interval:
             return
-        last[0] = t
+        last.update(at=t, stage=stage)
         store.update(run_id, progress={"stage": stage, "done": done, "total": total, "detail": detail,
                                        "at": now()})
     return write
@@ -244,21 +245,13 @@ def revise(*, runs_dir: str | Path, run_id: str, proposal_id: int, changes: dict
 
     changes: {"params_changes": [...], "override_rules": [...]} 원래 안과 경로·구간 조건이 같고 값만 다르다.
     비교 기준은 이 실행의 챔피언 params, 시나리오 세트, 판정 기준이다 (실행 당시 스냅샷).
+    재검증(최대 max_seconds)은 잠금 밖에서 하고, 결과를 기록할 때만 레지스트리 잠금을 잡는다.
     """
     store = RunStore(runs_dir)
-    registry = _registry(_awaiting(store, run_id))
-    try:
-        with registry.lock():   # 승인·반려와 단계 파일 쓰기가 섞이지 않게
-            return _revise_locked(store, run_id, proposal_id, changes, max_seconds, note)
-    except RegistryError as exc:
-        raise WorkflowError(str(exc)) from None
-
-
-def _revise_locked(store: RunStore, run_id: str, proposal_id: int, changes: dict, max_seconds: float,
-                   note: str | None) -> dict:
     run = _awaiting(store, run_id)
+    if not isinstance(changes, dict):
+        raise WorkflowError("changes는 {params_changes, override_rules} 형태여야 한다")
     proposals = store.load_stage(run_id, "proposals")
-    validation = store.load_stage(run_id, "validation")
     original = next((p for p in proposals["proposals"] if p["id"] == proposal_id), None)
     if original is None or original["state"] != stages.VALID:
         raise WorkflowError(f"개선안 {proposal_id}는 수정할 수 없다 (검증된 params 안만 수정한다)")
@@ -266,7 +259,7 @@ def _revise_locked(store: RunStore, run_id: str, proposal_id: int, changes: dict
               "override_rules": copy.deepcopy(changes.get("override_rules") or [])}
     try:
         same_shape = _shape(edited) == _shape(original["proposal"])
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, AttributeError):
         same_shape = False
     if not same_shape:
         raise WorkflowError("값만 고칠 수 있다: 변경 경로와 구간 조건(when, set 경로)은 원래 안과 같아야 한다")
@@ -275,27 +268,35 @@ def _revise_locked(store: RunStore, run_id: str, proposal_id: int, changes: dict
 
     engine = get_engine(run["engine"])
     params = store.load_stage(run_id, "run")["params"]
-    pack = engine.pack_factory(params)
-    errors = params_errors(params, edited, pack.dimensions())
+    errors = params_errors(params, edited, engine.pack_factory(params).dimensions())
     if errors:
         raise WorkflowError("허용 범위 검사 실패: " + "; ".join(errors))
 
-    new_id = max(p["id"] for p in proposals["proposals"]) + 1
     base = original["proposal"]
     proposal = {**{k: v for k, v in base.items() if k not in ("params_changes", "override_rules")}, **edited,
                 "title": f"{base.get('title')} (사람 수정)"}
-    entry = {"id": new_id, "state": stages.VALID, "errors": [], "proposal": proposal,
-             "origin": {"revised_from": proposal_id, "by": "human", "at": now(), "note": note,
-                        "before": {k: base.get(k) or [] for k in edited}, "after": edited}}
+    origin = {"revised_from": proposal_id, "by": "human", "at": now(), "note": note,
+              "before": {k: base.get(k) or [] for k in edited}, "after": edited}
     sets = {k: {"name": s["name"], "cases": s["cases"]} for k, s in run["scenarios"].items()}
-    report = store.load_stage(run_id, "analysis")
+    judgment = store.load_stage(run_id, "validation")["judgment"]
+    entry = {"id": 0, "state": stages.VALID, "errors": [], "proposal": proposal, "origin": origin}
     try:
-        result = stages.validation_stage(engine, params, [entry], report, sets, validation["judgment"],
-                                         max_seconds)["results"][0]
+        result = stages.validation_stage(engine, params, [entry], store.load_stage(run_id, "analysis"), sets,
+                                         judgment, max_seconds)["results"][0]
     except BudgetExceeded as exc:
         raise WorkflowError(f"수정안 검증: {exc}") from None
-    proposals["proposals"].append(entry)
-    validation["results"].append({**result, "origin": entry["origin"]})
-    store.save_stage(run_id, "proposals", proposals)
-    store.save_stage(run_id, "validation", validation)
+
+    try:
+        with _registry(run).lock():   # 승인·반려와 단계 파일 쓰기가 섞이지 않게: 기록할 때만 잡는다
+            _awaiting(store, run_id)   # 재검증하는 동안 승인·반려되었으면 기록하지 않는다
+            proposals = store.load_stage(run_id, "proposals")
+            validation = store.load_stage(run_id, "validation")
+            entry["id"] = max(p["id"] for p in proposals["proposals"]) + 1
+            result["id"] = entry["id"]
+            proposals["proposals"].append(entry)
+            validation["results"].append({**result, "origin": origin})
+            store.save_stage(run_id, "proposals", proposals)
+            store.save_stage(run_id, "validation", validation)
+    except RegistryError as exc:
+        raise WorkflowError(str(exc)) from None
     return {"proposal": entry, "result": result}

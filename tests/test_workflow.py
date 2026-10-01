@@ -215,3 +215,15 @@ def test_unexpected_error_is_recorded_as_failed(ws):
     with pytest.raises(RuntimeError):
         _run(ws, llm=FakeLLM(lambda item, n, messages, tools: RuntimeError("api down")))
     assert _failed_reason(ws) == "analysis: RuntimeError: api down"
+
+
+def test_progress_writes_stage_changes_even_within_the_throttle(ws, tmp_path):
+    store = RunStore(tmp_path / "runs")
+    run_id = store.create({})
+    write = runner._progress_writer(store, run_id, min_interval=60)
+    write("run", 1, 5, "a")
+    write("run", 2, 5, "b")                      # 같은 단계 중간 값: 건너뛴다
+    assert store.load(run_id)["progress"]["detail"] == "a"
+    write("run", 5, 5, "끝")
+    write("analysis", 0, 1, "분석 agent 실행 중")   # 바로 뒤의 단계 전환도 남는다
+    assert store.load(run_id)["progress"]["stage"] == "analysis"

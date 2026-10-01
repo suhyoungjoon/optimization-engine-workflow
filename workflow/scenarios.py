@@ -13,12 +13,16 @@ def load_set(path: str | Path) -> dict:
 def parse_set(data: dict, path: str | Path) -> dict:
     """세트 데이터를 검사해 {name, path, cases}로 만든다. path는 오류 메시지와 기록용."""
     path = Path(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: 세트는 {{name, cases}} 형태여야 한다")
     cases = data.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValueError(f"{path}: cases가 비어 있다")
     out = []
     for i, case in enumerate(cases):
-        seed, faults = (case or {}).get("seed"), (case or {}).get("faults", [])
+        if not isinstance(case, dict):
+            raise ValueError(f"{path}: cases[{i}]는 {{seed, faults}} 형태여야 한다")
+        seed, faults = case.get("seed"), case.get("faults", [])
         if not isinstance(seed, int) or isinstance(seed, bool):
             raise ValueError(f"{path}: cases[{i}].seed는 정수여야 한다")
         if not isinstance(faults, list) or not all(isinstance(f, str) for f in faults):

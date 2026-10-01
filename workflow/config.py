@@ -50,6 +50,8 @@ def _merge(node, value):
 
 def save_settings(path: str | Path, updates: dict) -> dict:
     """updates: {"llm": {...}, "validation": {...}, "judgment": {...}} 중 바꿀 섹션 전체."""
+    if not isinstance(updates, dict) or not all(isinstance(v, dict) for v in updates.values()):
+        raise ValueError("섹션마다 {키: 값} 형태로 보낸다")
     unknown = set(updates) - set(EDITABLE)
     if unknown:
         raise ValueError(f"편집할 수 없는 섹션: {sorted(unknown)}")
@@ -72,7 +74,7 @@ def save_set(path: str | Path, cases: list[dict], other_path: str | Path, known_
     path = Path(path)
     ry = YAML()
     doc = ry.load(path.read_text(encoding="utf-8"))
-    candidate = parse_set({"name": doc.get("name"), "cases": cases}, path)
+    candidate = parse_set({"name": doc.get("name"), "cases": cases}, path)   # 형식이 틀리면 ValueError
     unknown = sorted({f for c in candidate["cases"] for f in c["faults"]} - known_faults)
     if unknown:
         raise ValueError(f"알 수 없는 결함: {unknown} (가능: {sorted(known_faults)})")

@@ -156,3 +156,14 @@ def test_params_diff_flattens_nested_values():
     rows = {r["path"]: r for r in params_diff(a, b)}
     assert rows["m.x"]["kind"] == "changed" and "version" not in rows
     assert rows["overrides.rules[0].set.m.x[1]"]["kind"] == "added"
+
+
+def test_malformed_bodies_are_400_not_500(ui):
+    client, _, _ = ui
+    assert client.put("/api/scenarios/train", json={"cases": [5]}).status_code == 400
+    assert client.put("/api/scenarios/train", json={"cases": ["x"]}).status_code == 400
+    assert client.put("/api/settings", json={"llm": 5}).status_code == 400
+    assert client.put("/api/settings", json={"judgment": []}).status_code == 400
+    run_id = client.post("/api/runs", json={}).json()["run_id"]
+    _wait(client, run_id)
+    assert client.post(f"/api/runs/{run_id}/revise", json={"proposal_id": 2, "changes": []}).status_code == 400

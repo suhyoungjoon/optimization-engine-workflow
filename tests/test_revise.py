@@ -78,3 +78,26 @@ def test_revise_only_while_awaiting(ws, awaiting):
 def test_progress_is_recorded(ws, awaiting):
     progress = RunStore(ws["runs"]).load(awaiting["run_id"])["progress"]
     assert progress["stage"] == "validation" and progress["done"] == progress["total"] == 4 * 3   # 생성 4 + 안 2 × 4
+
+
+def test_revalidation_runs_outside_the_registry_lock(ws, awaiting, monkeypatch):
+    """재검증 중에도 승인·반려가 막히지 않고, 그 사이 승인되면 수정안은 기록하지 않는다."""
+    from workflow import stages
+    original = stages.validation_stage
+    lock = ws["models"] / "rule" / ".lock"
+    seen = {}
+
+    def spy(*args, **kwargs):
+        seen["locked"] = lock.exists()
+        runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])   # 잠금이 없으니 바로 된다
+        return original(*args, **kwargs)
+    monkeypatch.setattr(stages, "validation_stage", spy)
+    with pytest.raises(runner.WorkflowError, match="승인 대기 상태가 아니다"):
+        _revise(ws, awaiting, 2, TW(90))
+    assert seen == {"locked": False} and not lock.exists()
+    assert len(RunStore(ws["runs"]).load_stage(awaiting["run_id"], "proposals")["proposals"]) == 4
+
+
+def test_changes_must_be_a_mapping(ws, awaiting):
+    with pytest.raises(runner.WorkflowError, match="형태여야"):
+        _revise(ws, awaiting, 2, [{"path": "matching.time_window_min[2]", "value": 90}])
