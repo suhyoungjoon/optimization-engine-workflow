@@ -336,6 +336,11 @@ function enginePref(set) {
 const engineTabs = (current, onPick) => h("div", { class: "segmented", role: "group", "aria-label": "엔진" },
   META.engines.map((e) => h("button", { class: e === current ? "on" : "", "aria-pressed": String(e === current), onclick: () => onPick(e) }, e)));
 const setKind = (name) => (name.endsWith("train") ? "train" : name.endsWith("holdout") ? "holdout" : null);
+// 짝(…train, …holdout)끼리 묶고, 학습용을 먼저
+const setOrder = (names) => [...names].sort((a, b) => {
+  const stem = (n) => (setKind(n) ? n.slice(0, -setKind(n).length) : n);
+  return stem(a).localeCompare(stem(b)) || (setKind(a) === "train" ? -1 : 1);
+});
 const setTitle = (name) => (setKind(name) ? `${SET_LABEL[setKind(name)]} · ${name}` : name);
 
 const notYet = (text = "이 단계는 아직 결과가 없다.") => h("div", { class: "empty" }, text);
@@ -780,7 +785,8 @@ async function settingsPage() {
     h("div", { class: "stack", style: "gap:16px" },
       judgmentCard(settings.values.judgment),
       limitsCard(settings.values, Object.keys(scenarios)),
-      h("div", { class: "grid-2" }, Object.keys(scenarios).map((n) => scenarioCard(n, scenarios))),
+      h("div", { class: "grid-2", style: "grid-template-columns: repeat(auto-fit, minmax(440px, 1fr))" },
+        setOrder(Object.keys(scenarios)).map((n) => scenarioCard(n, scenarios))),
       paramsCard(champ, engine)));
 }
 
@@ -1160,12 +1166,12 @@ function comparisonsCard() {
       catch (e) { toast(e.message, true); }
     } }, "비교 실행");
     const latest = data.items[0];
-    box.replaceChildren(
+    box.replaceChildren(...[
       h("div", { class: "card-head" }, h("h2", {}, "엔진 간 비교"), h("span", { class: "badge outline" }, "정보용 · 판정·승인과 무관"),
         h("span", { class: "spacer" }), setSel, start),
       h("p", { class: "small ink-2", style: "margin:0 0 10px" }, "엔진마다 현재 챔피언을 같은 시나리오 세트의 같은 인스턴스로 풀어 비교한다. 필수조건은 모두 도메인 팩의 validate()로 센다."),
       data.running ? h("div", { class: "row small" }, h("span", { class: "spinner" }), `${data.running.detail} (${data.running.done}/${data.running.total})`) : null,
-      latest ? comparisonTable(latest) : h("div", { class: "empty" }, "아직 비교 결과가 없다."));
+      latest ? comparisonTable(latest) : h("div", { class: "empty" }, "아직 비교 결과가 없다.")].filter(Boolean));
     if (data.running) setTimeout(() => { if (location.hash.startsWith("#/models")) draw(); }, 2000);
   };
   draw();
