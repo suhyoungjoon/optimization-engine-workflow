@@ -108,7 +108,7 @@ function route() {
   pollTimer = null;
   const parts = (location.hash.replace(/^#\/?/, "") || "runs").split("/");
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === parts[0]));
-  const view = { runs: parts[1] ? () => runPage(parts[1], parts[2]) : runsPage, models: () => modelsPage(parts[1]),
+  const view = { runs: parts[1] ? () => runPage(parts[1], parts[2]) : runsPage, models: () => (/^v\d+$/.test(parts[1] || "") ? modelsPage(enginePref(), parts[1]) : modelsPage(parts[1] || enginePref(), parts[2])),
                  workflow: () => workflowPage(parts[1]), settings: settingsPage }[parts[0]] || runsPage;
   Promise.resolve(view()).catch((e) => app.replaceChildren(h("div", { class: "error-box" }, e.message)));
 }
@@ -156,20 +156,23 @@ async function runsPage() {
   clearInterval(pollTimer);
   pollTimer = null;
   const [list, scenarios] = await Promise.all([api("/api/runs"), api("/api/scenarios")]);
+  const engine = enginePref();
+  const sets = META.engine_scenarios[engine];
   const startBtn = h("button", { class: "primary", disabled: list.busy, onclick: startRun },
     list.busy ? "다른 실행이 진행 중" : "리허설 실행 시작");
   async function startRun() {
     startBtn.disabled = true;
     try {
-      const { run_id } = await post("/api/runs", { engine: "rule", train: "train", holdout: "holdout" });
+      const { run_id } = await post("/api/runs", { engine });   // 시나리오 세트는 엔진별 기본값
       location.hash = `#/runs/${run_id}`;
     } catch (e) { toast(e.message, true); startBtn.disabled = false; }
   }
   const setInfo = (name) => {
     const set = scenarios[name];
+    if (!set) return h("div", { class: "error-box" }, `시나리오 세트 ${name}가 없다`);
     const combos = [...new Set(set.cases.map((c) => c.faults.join("+") || "결함 없음"))];
     return h("div", { class: "stack", style: "gap:4px" },
-      h("div", {}, h("b", {}, `${SET_LABEL[name]} ${set.cases.length}건`), " ",
+      h("div", {}, h("b", {}, `${setTitle(name)} ${set.cases.length}건`), " ",
         h("span", { class: "muted small" }, `seed ${set.cases.map((c) => c.seed).join(", ")}`)),
       h("div", { class: "chips" }, combos.map((c) => h("span", { class: "chip" }, c))));
   };
@@ -185,10 +188,12 @@ async function runsPage() {
   app.replaceChildren(
     h("div", { class: "row", style: "margin-bottom:16px" }, h("h1", {}, "실행"), h("span", { class: "spacer" })),
     h("div", { class: "card", style: "margin-bottom:16px" },
-      h("div", { class: "card-head" }, h("h2", {}, "새 실행"), h("span", { class: "badge warn" }, "리허설만 허용 (가짜 LLM, API 비용 없음)")),
-      h("div", { class: "grid-2" }, setInfo("train"), setInfo("holdout")),
+      h("div", { class: "card-head" }, h("h2", {}, "새 실행"), engineTabs(engine, (e) => { enginePref(e); runsPage(); }),
+        h("span", { class: "badge warn" }, "리허설만 허용 (가짜 LLM, API 비용 없음)")),
+      h("div", { class: "grid-2" }, setInfo(sets.train), setInfo(sets.holdout)),
       h("div", { class: "row", style: "margin-top:14px" },
-        h("span", { class: "small muted" }, "엔진 rule · 현재 챔피언으로 실행 · 시나리오 세트는 기준정보에서 바꾼다"),
+        h("span", { class: "small muted" }, `엔진 ${engine} · 현재 챔피언으로 실행 · 엔진별 기본 시나리오 세트와 예산은 기준정보에서 바꾼다`,
+          engine === "solver" ? " · solver는 1회 풀이가 15초 안팎이라 실행이 수 분 걸린다" : ""),
         h("span", { class: "spacer" }), startBtn)),
     h("div", { class: "card" },
       rows.length
@@ -320,6 +325,18 @@ function pipelineView(set) {   // 보기 선택은 이 브라우저에만 기억
     return localStorage.getItem("pipelineView") || "cards";
   } catch { return set || "cards"; }
 }
+
+function enginePref(set) {
+  try {
+    if (set) localStorage.setItem("engine", set);
+    const v = localStorage.getItem("engine");
+    return META.engines.includes(v) ? v : META.engines[0];
+  } catch { return set || META.engines[0]; }
+}
+const engineTabs = (current, onPick) => h("div", { class: "segmented", role: "group", "aria-label": "엔진" },
+  META.engines.map((e) => h("button", { class: e === current ? "on" : "", "aria-pressed": String(e === current), onclick: () => onPick(e) }, e)));
+const setKind = (name) => (name.endsWith("train") ? "train" : name.endsWith("holdout") ? "holdout" : null);
+const setTitle = (name) => (setKind(name) ? `${SET_LABEL[setKind(name)]} · ${name}` : name);
 
 const notYet = (text = "이 단계는 아직 결과가 없다.") => h("div", { class: "empty" }, text);
 
@@ -567,7 +584,7 @@ function applyView({ run, stages }) {
     return h("div", { class: "stack" },
       h("div", { class: "row" }, h("span", { class: "badge good" }, "✓ 승인됨"), h("b", {}, `안 ${st.proposal_id}: ${st.title}`)),
       h("dl", { class: "kv" },
-        h("dt", {}, "모델"), h("dd", {}, `${st.model_before} → `, h("a", { href: `#/models/${st.version_after}` }, st.model_after)),
+        h("dt", {}, "모델"), h("dd", {}, `${st.model_before} → `, h("a", { href: `#/models/${run.engine}/v${st.version_after}` }, st.model_after)),
         h("dt", {}, "승인 시각"), h("dd", {}, fmtTime(st.at)),
         st.note ? [h("dt", {}, "메모"), h("dd", {}, st.note)] : null,
         st.override_reason ? [h("dt", {}, "판정 무시 사유"), h("dd", {}, h("span", { class: "badge warn" }, "판정 무시"), " ", st.override_reason)] : null));
@@ -633,19 +650,22 @@ function applyView({ run, stages }) {
 
 // --- 모델 버전 ---
 
-async function modelsPage(sel) {
-  const data = await api("/api/models/rule");
+async function modelsPage(engine, sel) {
+  if (!META.engines.includes(engine)) engine = enginePref();
+  enginePref(engine);
+  const data = await api(`/api/models/${engine}`);
   const versions = data.versions;
   const selected = Number(sel?.replace(/^v/, "")) || data.champion;
-  const detail = await api(`/api/models/rule/versions/${selected}`);
-  const parentDiff = detail.card.parent ? await api(`/api/models/rule/diff?a=${detail.card.parent}&b=${selected}`) : null;
+  const detail = await api(`/api/models/${engine}/versions/${selected}`);
+  const parentDiff = detail.card.parent ? await api(`/api/models/${engine}/diff?a=${detail.card.parent}&b=${selected}`) : null;
 
   app.replaceChildren(
     h("div", { class: "row", style: "margin-bottom:16px" }, h("h1", {}, "모델 버전"),
-      h("span", { class: "badge human" }, `챔피언 rule@v${data.champion}`), h("span", { class: "muted small" }, `버전 ${versions.length}개 · 버전 파일은 만든 뒤 바뀌지 않는다`)),
+      engineTabs(engine, (e) => (location.hash = `#/models/${e}`)),
+      h("span", { class: "badge human" }, `챔피언 ${engine}@v${data.champion}`), h("span", { class: "muted small" }, `버전 ${versions.length}개 · 버전 파일은 만든 뒤 바뀌지 않는다`)),
     h("div", { class: "models-layout" },
       h("div", { class: "stack" },
-        h("div", { class: "card lineage" }, h("div", { class: "section-title" }, "버전 계보"), lineage(versions, data.champion, selected)),
+        h("div", { class: "card lineage" }, h("div", { class: "section-title" }, "버전 계보"), lineage(versions, data.champion, selected, engine)),
         h("div", { class: "card" }, h("div", { class: "section-title" }, "챔피언 이력"),
           h("ul", { class: "events" }, [...data.history].reverse().map((e) => h("li", {},
             h("span", { class: "muted small" }, shortDate(e.at)),
@@ -653,10 +673,11 @@ async function modelsPage(sel) {
               e.previous ? h("span", { class: "muted" }, ` (이전 v${e.previous})`) : null,
               e.reason ? h("div", { class: "ink-2" }, e.reason) : null,
               e.run_id ? h("div", {}, h("a", { href: `#/runs/${e.run_id}` }, `실행 ${e.run_id}`), ` 안 ${e.proposal_id}`) : null)))))),
-      versionDetail(detail, parentDiff, versions, data.champion)));
+      versionDetail(detail, parentDiff, versions, data.champion, engine)),
+    comparisonsCard());
 }
 
-function lineage(versions, champion, selected) {
+function lineage(versions, champion, selected, engine) {
   const lane = {}, childSeen = {};
   let maxLane = 0;
   for (const v of versions) {
@@ -681,18 +702,18 @@ function lineage(versions, champion, selected) {
       const isChamp = v.version === champion, isSel = v.version === selected;
       const how = v.override ? "판정 무시" : v.parent == null ? "초기" : v.verdict?.pass ? "판정 통과" : "";
       return s("g", { class: "node", tabindex: 0, role: "link", "aria-label": `v${v.version}`,
-        onclick: () => (location.hash = `#/models/v${v.version}`), onkeydown: (e) => e.key === "Enter" && (location.hash = `#/models/v${v.version}`) },
+        onclick: () => (location.hash = `#/models/${engine}/v${v.version}`), onkeydown: (e) => e.key === "Enter" && (location.hash = `#/models/${engine}/v${v.version}`) },
         s("rect", { x: 0, y: y[v.version] - 24, width: W, height: 48, rx: 8, fill: isSel ? "var(--surface-2)" : "transparent" }),
         isChamp ? s("circle", { cx: x(v.version), cy: y[v.version], r: 12, fill: "none", stroke: "var(--actor-human)", "stroke-width": 2 }) : null,
         s("circle", { class: "body", cx: x(v.version), cy: y[v.version], r: 7, fill: isChamp ? "var(--actor-human)" : "var(--surface)", stroke: "var(--actor-human)", "stroke-width": 2 }),
         s("text", { x: x0 + (maxLane + 1) * laneW + 6, y: y[v.version] - 3, "font-size": 13, "font-weight": 650, fill: "var(--ink)" },
-          `rule@v${v.version}`, isChamp ? s("tspan", { "font-size": 11, fill: "var(--ink-2)", "font-weight": 600 }, "  · 챔피언") : null),
+          `${engine}@v${v.version}`, isChamp ? s("tspan", { "font-size": 11, fill: "var(--ink-2)", "font-weight": 600 }, "  · 챔피언") : null),
         s("text", { x: x0 + (maxLane + 1) * laneW + 6, y: y[v.version] + 14, "font-size": 11.5, fill: "var(--muted)" },
           `${v.parent != null ? `부모 v${v.parent} · ` : ""}${how}${v.origin ? " · 사람 수정" : ""}`));
     }));
 }
 
-function versionDetail(detail, parentDiff, versions, champion) {
+function versionDetail(detail, parentDiff, versions, champion, engine) {
   const card = detail.card;
   const v = card.version;
   const judged = card.validation ? Object.keys(card.validation.train.metrics).filter((m) => ["assignment_rate", "desired_time_match_rate", "avg_travel_min"].includes(m)) : [];
@@ -700,25 +721,25 @@ function versionDetail(detail, parentDiff, versions, champion) {
   const rollbackReason = h("input", { placeholder: "되돌리기 사유 (필수)", style: "flex:1; min-width:200px" });
   async function makeChampion() {
     if (!rollbackReason.value.trim()) return err.replaceChildren(h("div", { class: "error-box" }, "사유를 적는다."));
-    if (!confirm(`챔피언을 rule@v${champion}에서 rule@v${v}로 바꿀까?`)) return;
-    try { await post("/api/models/rule/rollback", { to: v, reason: rollbackReason.value }); toast(`챔피언: rule@v${v}`); modelsPage(`v${v}`); }
+    if (!confirm(`챔피언을 ${engine}@v${champion}에서 ${engine}@v${v}로 바꿀까?`)) return;
+    try { await post(`/api/models/${engine}/rollback`, { to: v, reason: rollbackReason.value }); toast(`챔피언: ${engine}@v${v}`); modelsPage(engine, `v${v}`); }
     catch (e) { err.replaceChildren(h("div", { class: "error-box" }, e.message)); }
   }
   const cmpA = h("select", {}, versions.map((x) => h("option", { value: x.version, selected: x.version === (card.parent ?? v) }, `v${x.version}`)));
   const cmpB = h("select", {}, versions.map((x) => h("option", { value: x.version, selected: x.version === v }, `v${x.version}`)));
   const cmpOut = h("div");
   async function compare() {
-    const d = await api(`/api/models/rule/diff?a=${cmpA.value}&b=${cmpB.value}`);
+    const d = await api(`/api/models/${engine}/diff?a=${cmpA.value}&b=${cmpB.value}`);
     cmpOut.replaceChildren(diffTable(d.rows, `v${d.a}`, `v${d.b}`));
   }
   return h("div", { class: "stack" },
     h("div", { class: "card" },
-      h("div", { class: "card-head" }, h("h2", {}, `rule@v${v}`),
+      h("div", { class: "card-head" }, h("h2", {}, `${engine}@v${v}`),
         detail.champion ? h("span", { class: "badge human" }, "챔피언") : null,
         card.parent == null ? h("span", { class: "badge outline" }, "초기 버전") : card.override ? h("span", { class: "badge warn" }, "판정 무시 승인") : h("span", { class: "badge good" }, "✓ 판정 통과"),
         card.origin ? h("span", { class: "badge human" }, `사람 수정 ← 안 ${card.origin.revised_from}`) : null),
       h("dl", { class: "kv" },
-        h("dt", {}, "부모"), h("dd", {}, card.parent != null ? h("a", { href: `#/models/v${card.parent}` }, `rule@v${card.parent}`) : "–"),
+        h("dt", {}, "부모"), h("dd", {}, card.parent != null ? h("a", { href: `#/models/${engine}/v${card.parent}` }, `${engine}@v${card.parent}`) : "–"),
         h("dt", {}, "만든 시각"), h("dd", {}, fmtTime(card.created_at)),
         card.run_id ? [h("dt", {}, "만든 실행"), h("dd", {}, h("a", { href: `#/runs/${card.run_id}` }, card.run_id), ` · 안 ${card.proposal_id}`)] : null,
         card.proposal ? [h("dt", {}, "개선안"), h("dd", {}, h("b", {}, card.proposal.title), card.proposal.rationale ? h("div", { class: "ink-2 small" }, card.proposal.rationale) : null)] : null,
@@ -750,16 +771,17 @@ function diffTable(rows, a, b) {
 // --- 기준정보 ---
 
 async function settingsPage() {
-  const [settings, scenarios, models] = await Promise.all([api("/api/settings"), api("/api/scenarios"), api("/api/models/rule")]);
-  const champ = await api(`/api/models/rule/versions/${models.champion}`);
+  const engine = enginePref();
+  const [settings, scenarios, models] = await Promise.all([api("/api/settings"), api("/api/scenarios"), api(`/api/models/${engine}`)]);
+  const champ = await api(`/api/models/${engine}/versions/${models.champion}`);
   app.replaceChildren(
     h("div", { class: "row", style: "margin-bottom:6px" }, h("h1", {}, "기준정보")),
     h("p", { class: "ink-2", style: "margin:0 0 16px" }, "바꾼 값은 다음 실행부터 쓴다. 이미 끝난 실행은 당시 판정 기준과 시나리오를 함께 보관한다. 파일(settings/, scenarios/)의 git 커밋은 사람이 한다."),
     h("div", { class: "stack", style: "gap:16px" },
       judgmentCard(settings.values.judgment),
-      limitsCard(settings.values),
-      h("div", { class: "grid-2" }, scenarioCard("train", scenarios), scenarioCard("holdout", scenarios)),
-      paramsCard(champ)));
+      limitsCard(settings.values, Object.keys(scenarios)),
+      h("div", { class: "grid-2" }, Object.keys(scenarios).map((n) => scenarioCard(n, scenarios))),
+      paramsCard(champ, engine)));
 }
 
 function saveRow(onSave) {
@@ -805,18 +827,52 @@ function judgmentCard(j) {
     }));
 }
 
-function limitsCard(values) {
+function limitsCard(values, setNames) {
   const a = h("input", { type: "number", min: 1, step: 1, value: values.llm.analyze_max_calls });
   const p = h("input", { type: "number", min: 1, step: 1, value: values.llm.propose_max_calls });
   const sec = h("input", { type: "number", min: 1, step: 1, value: values.validation.max_seconds });
+  const base = {};
+  function setSel(kind, value, isBase, engine) {
+    const sel = h("select", {}, isBase ? null : h("option", { value: "" }, "기본"),
+      setNames.filter((n) => setKind(n) === kind).map((n) => h("option", { value: n, selected: n === value }, n)));
+    if (isBase) base[kind] = sel;
+    return sel;
+  }
+  const overrides = {};
+  const overrideRows = META.engines.map((e) => {
+    const o = values.engines?.[e] || {};
+    const f = overrides[e] = {
+      calls: h("input", { type: "number", min: 1, step: 1, value: o.llm?.propose_max_calls ?? "", placeholder: values.llm.propose_max_calls }),
+      secs: h("input", { type: "number", min: 1, step: 1, value: o.validation?.max_seconds ?? "", placeholder: values.validation.max_seconds }),
+      train: setSel("train", o.scenarios?.train, false), holdout: setSel("holdout", o.scenarios?.holdout, false),
+    };
+    return h("tr", {}, h("td", { class: "mono" }, e), h("td", {}, f.calls), h("td", {}, f.secs), h("td", {}, f.train), h("td", {}, f.holdout));
+  });
   return h("section", { class: "card" },
     h("div", { class: "card-head" }, h("h2", {}, "실행 상한")),
     h("div", { class: "row", style: "gap:16px" },
       h("label", { class: "field" }, h("span", {}, "결과분석 LLM 호출 상한 ", actorChip("ai")), a),
       h("label", { class: "field" }, h("span", {}, "개선안 도출 LLM 호출 상한 ", actorChip("ai")), p),
       h("label", { class: "field" }, h("span", {}, "검증 시간 예산(초) ", actorChip("code")), sec)),
-    saveRow(() => put("/api/settings", { llm: { analyze_max_calls: Number(a.value), propose_max_calls: Number(p.value) },
-                                         validation: { max_seconds: Number(sec.value) } })));
+    h("div", { class: "section-title", style: "margin-top:16px" }, "기본 시나리오 세트"),
+    h("div", { class: "row", style: "gap:16px" }, ...["train", "holdout"].map((k) => h("label", { class: "field" }, SET_LABEL[k], setSel(k, values.scenarios[k], true)))),
+    h("div", { class: "section-title", style: "margin-top:16px" }, "엔진별 예외 (비우면 기본값을 따른다)"),
+    h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "엔진"), h("th", {}, "개선안 도출 LLM 호출"), h("th", {}, "검증 예산(초)"), h("th", {}, "학습용 세트"), h("th", {}, "검증용 세트"))),
+      h("tbody", {}, overrideRows))),
+    saveRow(() => {
+      const engines = {};
+      for (const [e, f] of Object.entries(overrides)) {
+        const o = {};
+        if (f.calls.value) o.llm = { propose_max_calls: Number(f.calls.value) };
+        if (f.secs.value) o.validation = { max_seconds: Number(f.secs.value) };
+        if (f.train.value || f.holdout.value) o.scenarios = { train: f.train.value || values.scenarios.train, holdout: f.holdout.value || values.scenarios.holdout };
+        if (Object.keys(o).length) engines[e] = o;
+      }
+      return put("/api/settings", { llm: { analyze_max_calls: Number(a.value), propose_max_calls: Number(p.value) },
+                                    validation: { max_seconds: Number(sec.value) },
+                                    scenarios: { train: base.train.value, holdout: base.holdout.value }, engines });
+    }));
 }
 
 function scenarioCard(name, scenarios) {
@@ -837,9 +893,10 @@ function scenarioCard(name, scenarios) {
   set.cases.forEach((c) => addRow(c.seed, c.faults));
   const nextSeed = () => Math.max(0, ...[...tbody.querySelectorAll("input[type=number]")].map((i) => Number(i.value))) + 1;
   return h("section", { class: "card" },
-    h("div", { class: "card-head" }, h("h2", {}, `${SET_LABEL[name]} 시나리오 세트`), h("span", { class: "badge outline" }, `${set.cases.length}건`)),
+    h("div", { class: "card-head" }, h("h2", {}, `${setTitle(name)}`), h("span", { class: "badge outline" }, `${set.cases.length}건`)),
     h("div", { class: "small muted", style: "margin-bottom:8px" },
-      name === "train" ? "챔피언 실행과 분석·개선안 도출(첫 케이스), 검증에 쓴다." : "판정에만 쓴다. 학습용과 seed가 겹치면 안 된다. 학습용에 없는 결함 조합을 섞으면 과적합을 걸러낸다.",
+      setKind(name) === "train" ? "챔피언 실행과 분석·개선안 도출(첫 케이스), 검증에 쓴다." : "판정에만 쓴다. 학습용과 seed가 겹치면 안 된다. 학습용에 없는 결함 조합을 섞으면 과적합을 걸러낸다.",
+      set.partner ? ` 짝: ${set.partner}.` : "",
       " 결함: ", META.faults.map((f) => `${f.id} ${f.name}`).join(", ")),
     h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "seed"), h("th", {}, "결함"), h("th", {}))), tbody),
     h("button", { class: "small", style: "margin-top:8px", onclick: () => addRow(nextSeed(), []) }, "+ 케이스 추가"),
@@ -850,13 +907,14 @@ function scenarioCard(name, scenarios) {
     }));
 }
 
-function paramsCard(champ) {
+function paramsCard(champ, engine) {
   const params = champ.params;
   const sections = Object.entries(params).filter(([k, v]) => k !== "version" && k !== "overrides" && v && typeof v === "object");
   return h("section", { class: "card" },
-    h("div", { class: "card-head" }, h("h2", {}, `챔피언 params (rule@v${champ.card.version}, 읽기 전용)`),
+    h("div", { class: "card-head" }, h("h2", {}, `챔피언 params (${engine}@v${champ.card.version}, 읽기 전용)`),
+      engineTabs(engine, (e) => { enginePref(e); settingsPage(); }),
       h("span", { class: "small muted" }, "params는 개선안 승인으로만 바뀐다. 개선안은 허용 범위(bounds) 안에서만 값을 바꿀 수 있다."),
-      h("a", { href: `#/models/v${champ.card.version}`, class: "small" }, "버전 보기")),
+      h("a", { href: `#/models/${engine}/v${champ.card.version}`, class: "small" }, "버전 보기")),
     h("div", { class: "table-wrap" }, h("table", {},
       h("thead", {}, h("tr", {}, h("th", {}, "섹션"), h("th", {}, "키"), h("th", {}, "값"), h("th", {}, "허용 범위"), h("th", {}, "설명"))),
       h("tbody", {}, sections.flatMap(([sec, body]) => Object.entries(body).filter(([k]) => k !== "bounds" && k !== "docs").map(([k, v]) =>
@@ -1087,4 +1145,45 @@ async function workflowPage(sel) {
         h("span", {}, "— 주 흐름"), h("span", {}, "┈ 입력"), h("span", { style: "color:var(--good-ink)" }, "┈ 승인·다음 실행"), h("span", {}, "┈ 사람의 되돌림·값 수정"))),
     h("div", { style: "margin-top:16px" }, detail));
   draw(selected);
+}
+
+// --- 엔진 간 비교 (정보용) ---
+
+function comparisonsCard() {
+  const box = h("section", { class: "card", style: "margin-top:16px" });
+  const draw = async () => {
+    const [data, scenarios] = await Promise.all([api("/api/comparisons"), api("/api/scenarios")]);
+    const setSel = h("select", {}, Object.keys(scenarios).filter((n) => setKind(n) === "holdout").map((n) =>
+      h("option", { value: n, selected: n === META.engine_scenarios[META.engines.at(-1)].holdout }, n)));
+    const start = h("button", { class: "small", disabled: !!data.running, onclick: async () => {
+      try { await post("/api/comparisons", { engines: META.engines, set: setSel.value }); draw(); }
+      catch (e) { toast(e.message, true); }
+    } }, "비교 실행");
+    const latest = data.items[0];
+    box.replaceChildren(
+      h("div", { class: "card-head" }, h("h2", {}, "엔진 간 비교"), h("span", { class: "badge outline" }, "정보용 · 판정·승인과 무관"),
+        h("span", { class: "spacer" }), setSel, start),
+      h("p", { class: "small ink-2", style: "margin:0 0 10px" }, "엔진마다 현재 챔피언을 같은 시나리오 세트의 같은 인스턴스로 풀어 비교한다. 필수조건은 모두 도메인 팩의 validate()로 센다."),
+      data.running ? h("div", { class: "row small" }, h("span", { class: "spinner" }), `${data.running.detail} (${data.running.done}/${data.running.total})`) : null,
+      latest ? comparisonTable(latest) : h("div", { class: "empty" }, "아직 비교 결과가 없다."));
+    if (data.running) setTimeout(() => { if (location.hash.startsWith("#/models")) draw(); }, 2000);
+  };
+  draw();
+  return box;
+}
+
+function comparisonTable(c) {
+  const names = c.engines, base = c.base;
+  const metrics = Object.keys(c.summary[base].metrics);
+  return h("div", {},
+    h("div", { class: "small muted", style: "margin-bottom:6px" }, `${c.set.name} ${c.cases.length}건 · ${fmtTime(c.at)} · 기준 ${base}`),
+    h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "지표 (세트 평균)"), names.map((n) => h("th", { class: "num" }, c.summary[n].model)),
+        names.slice(1).map((n) => h("th", { class: "num" }, `${n} − ${base}`)))),
+      h("tbody", {},
+        metrics.map((m) => h("tr", {}, h("td", {}, metricLabel(m)), names.map((n) => h("td", { class: "num" }, fmtValue(m, c.summary[n].metrics[m]))),
+          names.slice(1).map((n) => { const d = c.summary[n][`delta_vs_${base}`][m]; return h("td", { class: `num ${deltaClass(m, d)}` }, fmtDelta(m, d)); }))),
+        h("tr", {}, h("td", {}, "필수조건 위반 (합계)"), names.map((n) => h("td", { class: "num" },
+          h("span", { class: `check ${c.summary[n].violations ? "no" : "ok"}` }, c.summary[n].violations ? "✕ " : "✓ "), c.summary[n].violations)), names.slice(1).map(() => h("td"))),
+        h("tr", {}, h("td", {}, "1회 풀이 시간(초)"), names.map((n) => h("td", { class: "num" }, c.summary[n].seconds_mean.toFixed(2))), names.slice(1).map(() => h("td")))))));
 }

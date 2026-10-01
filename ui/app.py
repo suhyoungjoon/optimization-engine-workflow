@@ -1,5 +1,6 @@
 """워크플로우 화면의 API. 경로는 모두 create_app 인자로 받는다 (테스트는 임시 폴더를 넘긴다)."""
 
+import json
 import threading
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from core import list_faults, load_config
 from engines import ENGINES, get_engine
 from modelreg import Registry, RegistryError
 from workflow import config, runner
+from workflow.compare_engines import compare_engines, save_comparison
 from workflow.pipeline import default_pipeline
 from workflow.rehearsal import rehearsal_llm
 from workflow.state import FINAL
@@ -20,7 +22,6 @@ from workflow.storage import STAGE_FILES, RunStore
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = Path(__file__).resolve().parent / "static"
-SET_NAMES = ("train", "holdout")
 
 
 def _flatten(value, prefix: str = "") -> dict:
@@ -73,10 +74,23 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
         eng, reg = engine_or_404(engine), registry(engine)
         return eng.pack_factory(eng.load_params(reg.params_path(reg.champion())))
 
+    def set_names() -> list[str]:
+        return sorted(p.stem for p in scenarios_dir.glob("*.yaml") if config.SET_NAME.match(p.stem))
+
     def set_path(name: str) -> Path:
-        if name not in SET_NAMES:
+        if not isinstance(name, str) or name not in set_names():
             raise HTTPException(404, f"알 수 없는 시나리오 세트: {name}")
         return scenarios_dir / f"{name}.yaml"
+
+    def partner(name: str) -> str | None:
+        """학습용·검증용 짝 (…train ↔ …holdout). seed가 겹치면 안 되는 상대."""
+        for a, b in (("train", "holdout"), ("holdout", "train")):
+            if name.endswith(a) and name[: -len(a)] + b in set_names():
+                return name[: -len(a)] + b
+        return None
+
+    def engine_settings(engine: str) -> dict:
+        return config.for_engine(config.load_settings(workflow_yaml), engine)
 
     def load_run(run_id: str) -> dict:
         try:
@@ -92,6 +106,7 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
         dims = pack.dimensions()
         stages = [{k: s[k] for k in ("key", "label", "actor", "kind")} for s in default_pipeline()["stages"]]
         return {"engines": list(ENGINES), "stages": stages, "rehearsal_only": True,
+                "engine_scenarios": {e: engine_settings(e)["scenarios"] for e in ENGINES},
                 "faults": list_faults(pack),
                 "metrics": sorted(_metric_names(pack)),
                 "dimensions": {k: v.get("label") for k, v in dims.get("dimensions", {}).items()}}
@@ -127,7 +142,9 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
     @app.post("/api/runs")
     def start_run(body: dict = Body(default={})):
         engine = engine_or_404(body.get("engine", "rule"))
-        train, holdout = set_path(body.get("train", "train")), set_path(body.get("holdout", "holdout"))
+        defaults = engine_settings(engine.name)["scenarios"]   # 세트를 고르지 않으면 엔진별 기본 세트
+        train = set_path(body.get("train") or defaults["train"])
+        holdout = set_path(body.get("holdout") or defaults["holdout"])
         started, box = threading.Event(), {}
         with lock:
             if active["thread"] is not None and active["thread"].is_alive():
@@ -217,6 +234,39 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
                                                        to=body.get("to")))
         return {"before": before, "after": after}
 
+    # --- 엔진 간 비교 (정보용) ---
+
+    comparisons_dir = runs_dir / "comparisons"
+    comparing: dict = {}
+
+    @app.get("/api/comparisons")
+    def comparisons():
+        items = sorted(comparisons_dir.glob("*.json"), reverse=True) if comparisons_dir.is_dir() else []
+        return {"running": comparing.get("progress"),
+                "items": [json.loads(p.read_text(encoding="utf-8")) for p in items[:10]]}
+
+    @app.post("/api/comparisons")
+    def start_comparison(body: dict = Body(default={})):
+        names = body.get("engines") or list(ENGINES)
+        engines = [engine_or_404(n) for n in names]
+        path = set_path(body.get("set") or engine_settings(names[-1])["scenarios"]["holdout"])
+        with lock:   # 실행과 같은 자리를 쓴다: 무거운 계산은 한 번에 하나
+            if active["thread"] is not None and active["thread"].is_alive():
+                raise HTTPException(409, "다른 실행·비교가 진행 중이다. 끝난 뒤 다시 시작한다")
+
+            def target():
+                try:
+                    result = compare_engines(engines, models_dir=models_dir, set_path=path,
+                                             progress=lambda d, t, m: comparing.update(progress={"done": d, "total": t, "detail": m}))
+                    save_comparison(runs_dir, result)
+                finally:
+                    comparing.pop("progress", None)
+
+            comparing["progress"] = {"done": 0, "total": 1, "detail": "시작"}
+            active["thread"] = threading.Thread(target=target, daemon=True)
+            active["thread"].start()
+        return {"started": True}
+
     # --- 기준정보 ---
 
     @app.get("/api/settings")
@@ -234,15 +284,15 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
     @app.get("/api/scenarios")
     def get_scenarios():
         from workflow.scenarios import load_set
-        return {name: load_set(set_path(name)) for name in SET_NAMES}
+        return {name: {**load_set(set_path(name)), "partner": partner(name)} for name in set_names()}
 
     @app.put("/api/scenarios/{name}")
     def put_scenario(name: str, body: dict = Body(...)):
         path = set_path(name)
-        other = set_path(next(n for n in SET_NAMES if n != name))
+        mate = partner(name)
         known = {f["id"] for f in list_faults(champion_pack())}
         try:
-            return config.save_set(path, body.get("cases"), other, known)
+            return config.save_set(path, body.get("cases"), set_path(mate) if mate else None, known)
         except ValueError as exc:
             fail(exc)
 

@@ -124,7 +124,7 @@ def test_models_diff_and_rollback(ui):
 def test_settings_edit(ui):
     client, tmp, _ = ui
     values = client.get("/api/settings").json()["values"]
-    assert set(values) == {"llm", "validation", "judgment"}
+    assert set(values) == {"llm", "validation", "judgment", "scenarios", "engines"}
     new = {"target": {"metric": "assignment_rate", "min_improvement": 0.02}, "guards": {"avg_travel_min": {"max_increase": 1.0}}}
     assert client.put("/api/settings", json={"judgment": new}).json()["values"]["judgment"] == new
     text = (tmp / "settings" / "workflow.yaml").read_text(encoding="utf-8")
@@ -167,3 +167,31 @@ def test_malformed_bodies_are_400_not_500(ui):
     run_id = client.post("/api/runs", json={}).json()["run_id"]
     _wait(client, run_id)
     assert client.post(f"/api/runs/{run_id}/revise", json={"proposal_id": 2, "changes": []}).status_code == 400
+
+
+def test_engines_and_named_scenario_sets(ui):
+    client, tmp, _ = ui
+    meta = client.get("/api/meta").json()
+    assert meta["engines"] == ["rule", "solver"]
+    assert meta["engine_scenarios"]["solver"] == {"train": "solver_train", "holdout": "solver_holdout"}
+    write_set(tmp / "scenarios" / "solver_train.yaml", "solver_train", [(1, P1_P4)])
+    write_set(tmp / "scenarios" / "solver_holdout.yaml", "solver_holdout", [(301, [])])
+    sets = client.get("/api/scenarios").json()
+    assert sets["solver_train"]["partner"] == "solver_holdout" and sets["train"]["partner"] == "holdout"
+    assert client.put("/api/scenarios/solver_holdout", json={"cases": [{"seed": 1, "faults": []}]}).status_code == 400  # 짝과 겹침
+    assert client.put("/api/scenarios/solver_holdout", json={"cases": [{"seed": 2, "faults": []}]}).status_code == 200  # 규칙 엔진 세트와는 무관
+    assert client.post("/api/runs", json={"engine": "nope"}).status_code == 404
+    assert client.get("/api/models/solver").json()["champion"] == 1
+
+
+def test_comparisons_api(ui):
+    client, _, _ = ui
+    assert client.post("/api/comparisons", json={"engines": ["rule"], "set": "holdout"}).json() == {"started": True}
+    for _ in range(200):
+        data = client.get("/api/comparisons").json()
+        if data["items"] and not data["running"]:
+            break
+        time.sleep(0.05)
+    latest = data["items"][0]
+    assert latest["engines"] == ["rule"] and latest["set"]["name"] == "holdout" and len(latest["cases"]) == 2
+    assert client.post("/api/comparisons", json={"engines": ["x"]}).status_code == 404
