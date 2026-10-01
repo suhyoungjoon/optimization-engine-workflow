@@ -2,13 +2,16 @@
 
 from engines.base import Engine
 
-ENGINES = ("rule",)
+ENGINES = ("rule", "solver")
 
 
 def get_engine(name: str) -> Engine:
     if name == "rule":
         from engines.rule import RuleEngine
         return RuleEngine()
+    if name == "solver":
+        from engines.solver import SolverEngine
+        return SolverEngine()
     raise ValueError(f"알 수 없는 엔진: {name} (가능: {', '.join(ENGINES)})")
 
 

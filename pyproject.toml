@@ -12,6 +12,7 @@ dependencies = [
     "optimization-agent-harness @ git+https://github.com/suhyoungjoon/optimization-agent-harness.git@1343534966ee7743b095a04e4fa00aad79576b42",
     "pyyaml>=6.0",
     "ruamel.yaml>=0.18",       # 모델 레지스트리: 버전 번호를 주석 보존하며 고친다
+    "ortools==9.15.6755",      # solver 엔진 (CP-SAT). 결정성 검증을 위해 버전 고정
 ]
 
 [project.optional-dependencies]
