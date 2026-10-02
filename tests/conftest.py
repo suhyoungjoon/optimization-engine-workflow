@@ -18,6 +18,12 @@ def write_set(path: Path, name: str, cases: list[tuple[int, list[str]]]) -> Path
     return path
 
 
+def _fast_search(settings: dict) -> dict:
+    """테스트 속도: 탐색 평가 수를 줄인다 (알고리즘 자체는 tests/test_search.py가 본다)."""
+    settings["search"]["max_evals"] = 6
+    return settings
+
+
 @pytest.fixture
 def ws(tmp_path):
     """이 레포 파일을 건드리지 않도록 레지스트리 사본, runs 폴더, 작은 시나리오 세트를 임시 폴더에 만든다.
@@ -28,7 +34,7 @@ def ws(tmp_path):
     return {"models": tmp_path / "models", "runs": tmp_path / "runs",
             "train": write_set(tmp_path / "train.yaml", "train", [(1, P1_P4), (2, P1_P4)]),
             "holdout": write_set(tmp_path / "holdout.yaml", "holdout-no-p4", [(201, ["P1", "P2", "P3"]), (202, [])]),
-            "settings": copy.deepcopy(SETTINGS),
+            "settings": _fast_search(copy.deepcopy(SETTINGS)),
             "llm_config": load_config(ROOT / "settings" / "llm.yaml")}
 
 

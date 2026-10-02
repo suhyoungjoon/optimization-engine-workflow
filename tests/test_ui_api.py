@@ -18,6 +18,8 @@ from workflow.rehearsal import policy
 def ui(tmp_path):
     for name in ("models", "settings"):
         shutil.copytree(ROOT / name, tmp_path / name)
+    wf = tmp_path / "settings" / "workflow.yaml"   # 테스트 속도: 탐색 평가 수를 줄인다
+    wf.write_text(wf.read_text(encoding="utf-8").replace("max_evals: 40", "max_evals: 6"), encoding="utf-8")
     (tmp_path / "scenarios").mkdir()
     write_set(tmp_path / "scenarios" / "train.yaml", "train", [(1, P1_P4), (2, P1_P4)])
     write_set(tmp_path / "scenarios" / "holdout.yaml", "holdout", [(201, ["P1", "P2", "P3"]), (202, [])])
@@ -47,7 +49,7 @@ def test_page_and_meta(ui):
     assert "엔진 개선 워크플로우" in client.get("/").text
     assert client.get("/static/app.js").status_code == 200
     meta = client.get("/api/meta").json()
-    assert [s["key"] for s in meta["stages"]] == ["run", "analysis", "proposals", "validation", "apply"]
+    assert [s["key"] for s in meta["stages"]] == ["run", "analysis", "proposals", "search", "validation", "apply"]
     assert meta["rehearsal_only"] and {f["id"] for f in meta["faults"]} == {"P1", "P2", "P3", "P4"}
     assert "assignment_rate" in meta["metrics"] and meta["dimensions"]["area_zone"]
     pipeline = client.get("/api/pipeline").json()
@@ -61,12 +63,13 @@ def test_run_from_start_to_approval(ui):
     run = _wait(client, run_id)
     assert run["status"] == "awaiting_approval" and run["llm"]["rehearsal"]
     detail = client.get(f"/api/runs/{run_id}").json()
-    assert set(detail["stages"]) == {"run", "analysis", "proposals", "validation", "apply"}
+    assert set(detail["stages"]) == {"run", "analysis", "proposals", "search", "validation", "apply"}
+    assert [c["id"] for c in detail["stages"]["search"]["candidates"]] == [5, 6]
     assert detail["stages"]["apply"] is None and not detail["final"]
 
     revised = client.post(f"/api/runs/{run_id}/revise", json={"proposal_id": 2, "note": "x", "changes": {
         "params_changes": [{"path": "matching.time_window_min[2]", "value": 90}]}})
-    assert revised.status_code == 200 and revised.json()["proposal"]["id"] == 5
+    assert revised.status_code == 200 and revised.json()["proposal"]["id"] == 7
     bad = client.post(f"/api/runs/{run_id}/revise", json={"proposal_id": 2, "changes": {
         "params_changes": [{"path": "cei.master_threshold", "value": 70}]}})
     assert bad.status_code == 400 and "값만" in bad.json()["detail"]
@@ -124,7 +127,7 @@ def test_models_diff_and_rollback(ui):
 def test_settings_edit(ui):
     client, tmp, _ = ui
     values = client.get("/api/settings").json()["values"]
-    assert set(values) == {"llm", "validation", "judgment", "scenarios", "engines"}
+    assert set(values) == {"llm", "search", "validation", "judgment", "scenarios", "engines"}
     new = {"target": {"metric": "assignment_rate", "min_improvement": 0.02}, "guards": {"avg_travel_min": {"max_increase": 1.0}}}
     assert client.put("/api/settings", json={"judgment": new}).json()["values"]["judgment"] == new
     text = (tmp / "settings" / "workflow.yaml").read_text(encoding="utf-8")

@@ -27,6 +27,7 @@ artifacts:                       # 단계가 만들어 다음 단계에 넘기�
   - {key: decisions, label: 결정 레코드·지표, file: "1_run.json, decisions.json"}
   - {key: report, label: 분석 리포트, file: 2_analysis.json}
   - {key: candidates, label: 개선안, file: 3_proposals.json}
+  - {key: search_results, label: 탐색 후보, file: 3b_search.json}
   - {key: verdicts, label: 비교·판정, file: 4_validation.json}
   - {key: model_version, label: 새 모델 버전, file: "models/<engine>/v<N>/, 5_apply.json"}
 
@@ -61,22 +62,32 @@ stages:                          # 순서대로
     settings: [llm.propose_max_calls]
     reuses: [core.propose, core.params_errors]
     does: 개선 agent가 params 변경안을 제안하고, 코드가 허용 범위(bounds)와 구조를 다시 검사해 검증 대상(valid)을 가른다.
+  - key: search
+    label: 파라미터 탐색
+    actor: ai
+    kind: agent
+    impl: workflow.stages.search_stage
+    reads: [report, champion, scenarios, judgment, llm]
+    writes: [search_results]
+    settings: [llm.search_max_calls, search.max_evals, search.max_seconds, search.top_k, search.max_dims]
+    reuses: [core.run_tool_loop, core.params_errors, core.simulate_params, judge_set]
+    does: 탐색 agent가 바꿔 볼 파라미터와 범위를 내면, 코드가 허용 범위를 검사하고 범위 안의 조합을 학습용 세트에서 직접 풀어 판정 규칙으로 점수를 매긴다. 학습용 판정을 통과한 상위 안을 검증으로 넘긴다. 검증용 세트는 쓰지 않는다.
   - key: validation
     label: 검증(비교)
     actor: code
     kind: code
     impl: workflow.stages.validation_stage
-    reads: [candidates, report, scenarios, judgment]
+    reads: [candidates, search_results, report, scenarios, judgment]
     writes: [verdicts]
     settings: [validation.max_seconds, judgment]
     reuses: [core.simulate_params]
-    does: 검증 대상 안마다 챔피언과 도전자를 학습용·검증용의 모든 케이스에서 비교하고 판정한다. 두 세트 모두 통과해야 판정 통과다.
+    does: 개선 agent의 안과 탐색 후보마다 챔피언과 도전자를 학습용·검증용의 모든 케이스에서 비교하고 판정한다. 두 세트 모두 통과해야 판정 통과다.
   - key: apply
     label: 개선적용
     actor: human
     kind: gate                   # 고정 노드: 확장으로 빼거나 건너뛸 수 없다 (핵심 원칙 2)
     impl: workflow.runner.approve
-    reads: [verdicts, candidates]
+    reads: [verdicts, candidates, search_results]
     writes: [model_version]
     settings: []
     reuses: [core.write_params, modelreg.Registry]

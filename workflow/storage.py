@@ -14,6 +14,7 @@ from core import to_jsonable
 from .state import RUNNING, check_transition
 
 STAGE_FILES = {"run": "1_run.json", "analysis": "2_analysis.json", "proposals": "3_proposals.json",
+               "search": "3b_search.json",   # M5에서 더한 단계. 이전 실행의 파일 이름을 바꾸지 않으려고 3b
                "validation": "4_validation.json", "apply": "5_apply.json", "decisions": "decisions.json"}
 
 

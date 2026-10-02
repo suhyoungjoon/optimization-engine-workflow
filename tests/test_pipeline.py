@@ -19,7 +19,7 @@ def test_definition_is_consistent_with_settings():
 
 def test_stage_keys_match_run_storage():
     assert [s["key"] for s in DEFN["stages"]] == [k for k in STAGE_FILES if k != "decisions"]
-    assert list(stage_labels().values()) == ["실행", "결과분석", "개선안 도출", "검증(비교)", "개선적용"]
+    assert list(stage_labels().values()) == ["실행", "결과분석", "개선안 도출", "파라미터 탐색", "검증(비교)", "개선적용"]
 
 
 def test_runner_calls_stage_impls_in_definition_order(ws, monkeypatch):
@@ -34,7 +34,7 @@ def test_runner_calls_stage_impls_in_definition_order(ws, monkeypatch):
             return _fn(*args, **kwargs)
         monkeypatch.setattr(target, name, spy)
     run = _run(ws)
-    runner.approve(runs_dir=ws["runs"], run_id=run["run_id"])
+    runner.approve(runs_dir=ws["runs"], run_id=run["run_id"], proposal_id=2)
     assert calls == [s["impl"] for s in DEFN["stages"]]
 
 
