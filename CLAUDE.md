@@ -60,7 +60,7 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 - 결정적인 부분(시나리오 생성, 비교 판정, 레지스트리)은 테스트를 먼저 작성한다.
 - 반복·비용 상한은 `settings/workflow.yaml`에서 읽는다 (개선 루프 횟수, 단계별 LLM 호출 수). 엔진마다 다른 값은 `engines.<엔진>`에 두고, 워크플로우 코드에 엔진 이름을 쓰지 않는다.
 - solver는 결정성을 지킨다: 단일 스레드·고정 seed·결정적 시간 한도(`objective.time_limit`). 문제끼리는 독립이라 병렬로 풀어도 결과가 같다(`SOLVER_THREADS`로 스레드 수 조정).
-  결정적이라 풀이 결과를 `runs/solver_cache/`에 저장해 다시 쓴다(키: 인스턴스·params·`engines/solver/model.py`·OR-Tools 버전, `SOLVER_CACHE_DIR=`로 끔). 시연용 세트(`demo_*`)는 케이스마다 `items`로 앞 N건만 쓴다.
+  결정적이라 풀이 결과를 `runs/solver_cache/`에 저장해 다시 쓴다(키: 인스턴스·params·`engines/solver/model.py`·OR-Tools 버전, `SOLVER_CACHE_DIR=`로 끔, `warm`으로 미리 채움). 새 개선안의 풀이는 매번 새로 계산한다. 시연용 세트(`demo_*`)는 케이스마다 `items`로 앞 N건만 쓴다.
 - 커밋 메시지: `[M1] workflow: add run stage` 형식.
 
 ## 명령어
@@ -77,7 +77,8 @@ python -m workflow approve <run_id> --proposal N --override-verdict --reason ...
 python -m workflow reject <run_id> --reason ...                    # 사람 반려 (기록만)
 python -m workflow models [--engine rule]                          # 모델 버전·챔피언 이력
 python -m workflow rollback [--engine rule] [--to N] --reason ...  # 챔피언 되돌리기 (기본: 부모 버전)
-python -m workflow compare-engines [--engines rule,solver] [--set solver_holdout]   # 엔진별 챔피언 비교 (정보용)
+python -m workflow compare-engines [--engines rule,solver] [--set solver_holdout]   # 엔진별 챔피언 비교 (정보용, 기본 세트: 마지막 엔진의 검증용)
+python -m workflow warm --engine solver [--set demo_train --set demo_holdout]       # 챔피언 풀이를 미리 캐시에 채움 (기본: 엔진별 기본 세트)
 python -m ui                                                       # 워크플로우 화면 http://127.0.0.1:8765 (리허설 실행만 허용)
 ```
 레포 루트에서 실행한다 (`--rehearsal`이 `tests/fake_llm.py`를 쓴다). 공통 옵션 `--runs-dir`, `--models-dir`, run 옵션 `--train`, `--holdout`, `--settings`로 경로를 바꾼다.

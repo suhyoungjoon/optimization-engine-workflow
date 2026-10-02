@@ -3,15 +3,20 @@
 테스트 속도를 위해 임시 레지스트리의 solver@v1 시간 한도를 줄이고, 케이스 1+1건 세트를 쓴다.
 """
 
+import pytest
 import yaml
 
 from engines import get_engine
+from engines.solver import clear_cache
 from modelreg import Registry
 from tests.conftest import P1_P4, write_set
 from workflow import runner
 from workflow.compare_engines import compare_engines
 from workflow.rehearsal import rehearsal_llm
+from workflow.scenarios import load_set
+from workflow.stages import run_stage
 from workflow.storage import RunStore
+from workflow.warm import warm
 
 
 def _fast_solver(ws):
@@ -55,3 +60,18 @@ def test_compare_engines_on_the_same_cases(ws, tmp_path):
     assert s["rule"]["violations"] == s["solver"]["violations"] == 0
     assert s["solver"]["metrics"]["assignment_rate"] >= s["rule"]["metrics"]["assignment_rate"]   # 규칙 엔진 해에서 출발
     assert set(s["solver"]["delta_vs_rule"]) == set(s["rule"]["metrics"])
+
+
+def test_warm_fills_the_disk_cache_for_the_champion(ws, tmp_path, monkeypatch):
+    _fast_solver(ws)
+    monkeypatch.setenv("SOLVER_CACHE_DIR", str(tmp_path / "cache"))
+    clear_cache()
+    sset = write_set(tmp_path / "w_train.yaml", "w_train", [(1, P1_P4), (2, P1_P4)])
+    engine = get_engine("solver")
+    result = warm(engine, models_dir=ws["models"], set_paths=[sset])
+    assert result["model"] == "solver@v1" and [c["seed"] for c in result["sets"][0]["cases"]] == [1, 2]
+    assert len(list((tmp_path / "cache").glob("*.json"))) == 2
+    clear_cache()                                               # 다음 실행(새 프로세스)과 같다
+    monkeypatch.setattr("engines.solver.solve_instance", lambda *a, **k: pytest.fail("캐시를 쓰지 않았다"))
+    params = engine.load_params(Registry(ws["models"], "solver").params_path(1))
+    run_stage(engine, params, load_set(sset)["cases"])          # 1단계 실행이 다시 풀지 않는다

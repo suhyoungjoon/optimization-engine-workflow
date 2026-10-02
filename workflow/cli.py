@@ -6,7 +6,8 @@ python -m workflow approve <run_id> [--proposal N] [--note ...] [--override-verd
 python -m workflow reject <run_id> --reason ...
 python -m workflow models [--engine rule]
 python -m workflow rollback [--engine rule] [--to N] --reason ...
-python -m workflow compare-engines [--engines rule,solver] [--set solver_holdout]
+python -m workflow compare-engines [--engines rule,solver] [--set NAME]
+python -m workflow warm --engine solver [--set demo_train --set demo_holdout]
 """
 
 import argparse
@@ -27,6 +28,7 @@ from .config import for_engine
 from .judge import SET_LABELS
 from .pipeline import stage_labels
 from .storage import RunStore
+from .warm import warm
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RUNS = ROOT / "runs"
@@ -132,6 +134,10 @@ def print_comparison(result: dict) -> None:
     print("  " + "1회 풀이 시간(초)".ljust(22) + "".join(f"{result['summary'][n]['seconds_mean']:14.2f}" for n in names))
 
 
+def _settings(settings_dir: Path) -> dict:
+    return yaml.safe_load((settings_dir / "workflow.yaml").read_text(encoding="utf-8"))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="workflow", description="최적화 엔진 개선 워크플로우")
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS)
@@ -170,8 +176,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p_cmp = sub.add_parser("compare-engines", help="엔진마다 현재 챔피언을 같은 시나리오 세트에서 비교한다 (정보용)")
     p_cmp.add_argument("--engines", default=",".join(ENGINES), help="쉼표 구분, 첫 엔진이 기준")
-    p_cmp.add_argument("--set", default="solver_holdout", help="시나리오 세트 이름 (scenarios/<이름>.yaml)")
+    p_cmp.add_argument("--set", help="시나리오 세트 이름 (기본: 마지막 엔진의 기본 검증용 세트)")
     p_cmp.add_argument("--scenarios-dir", type=Path, default=DEFAULT_SCENARIOS)
+    p_cmp.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
+
+    p_warm = sub.add_parser("warm", help="현재 챔피언으로 세트를 미리 풀어 결과 캐시를 채운다 (실행 기록 없음)")
+    p_warm.add_argument("--engine", choices=ENGINES, required=True)
+    p_warm.add_argument("--set", action="append", dest="sets",
+                        help="시나리오 세트 이름, 여러 번 지정 가능 (기본: 설정의 엔진별 학습용·검증용 세트)")
+    p_warm.add_argument("--scenarios-dir", type=Path, default=DEFAULT_SCENARIOS)
+    p_warm.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
 
     args = parser.parse_args(argv)
     if args.cmd == "approve" and args.override_verdict and not args.reason:
@@ -180,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "run":
             engine = get_engine(args.engine)
-            settings = yaml.safe_load((args.settings / "workflow.yaml").read_text(encoding="utf-8"))
+            settings = _settings(args.settings)
             sets = for_engine(settings, engine.name)["scenarios"]
             train = args.train or DEFAULT_SCENARIOS / f"{sets['train']}.yaml"
             holdout = args.holdout or DEFAULT_SCENARIOS / f"{sets['holdout']}.yaml"
@@ -202,12 +216,32 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "compare-engines":
             names = [n for n in args.engines.split(",") if n]
-            result = compare_engines([get_engine(n) for n in names], models_dir=args.models_dir,
-                                     set_path=args.scenarios_dir / f"{args.set}.yaml",
+            engines = [get_engine(n) for n in names]
+            set_name = args.set or for_engine(_settings(args.settings), names[-1])["scenarios"]["holdout"]
+            result = compare_engines(engines, models_dir=args.models_dir,
+                                     set_path=args.scenarios_dir / f"{set_name}.yaml",
                                      progress=lambda d, t, msg: print(f"  {d}/{t} {msg}", file=sys.stderr))
             cid = save_comparison(args.runs_dir, result)
             print_comparison(result)
             print(f"\n저장: {args.runs_dir / 'comparisons' / (cid + '.json')}")
+            return 0
+        if args.cmd == "warm":
+            engine = get_engine(args.engine)
+            names = args.sets
+            if not names:
+                defaults = for_engine(_settings(args.settings), engine.name)["scenarios"]
+                names = [defaults["train"], defaults["holdout"]]
+            try:
+                result = warm(engine, models_dir=args.models_dir,
+                              set_paths=[args.scenarios_dir / f"{n}.yaml" for n in names],
+                              progress=lambda d, t, msg: print(f"  {d}/{t} {msg}", file=sys.stderr))
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"오류: {exc}", file=sys.stderr)
+                return 2
+            print(f"{result['model']} 결과를 미리 풀었다 ({result['seconds']:.1f}초)")
+            for s in result["sets"]:
+                print(f"  {s['name']}: {len(s['cases'])}건  " + ", ".join(f"seed {c['seed']} {c['seconds']:.1f}초"
+                                                                       for c in s["cases"]))
             return 0
         if args.cmd == "rollback":
             before, after = runner.rollback(models_dir=args.models_dir, engine=args.engine, reason=args.reason,

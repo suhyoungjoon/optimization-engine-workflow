@@ -38,3 +38,13 @@ def test_cli_reports_unexpected_failure_without_traceback(ws, capsys):
     code = main(_base(ws) + ["run", "--rehearsal", "--train", str(ws["train"]), "--holdout", str(ws["holdout"])])
     err = capsys.readouterr().err
     assert code == 1 and "실행 실패" in err and "기록:" in err
+
+
+def test_cli_warm_solves_the_champion_on_the_named_sets(ws, capsys):
+    sets_dir = str(ws["train"].parent)
+    assert main(_base(ws) + ["warm", "--engine", "rule", "--scenarios-dir", sets_dir,
+                             "--set", "train", "--set", "holdout"]) == 0
+    out = capsys.readouterr().out
+    assert "rule@v1" in out and "train: 2건" in out and "holdout-no-p4: 2건" in out
+    assert not ws["runs"].exists()                               # 실행 기록을 남기지 않는다
+    assert main(_base(ws) + ["warm", "--engine", "rule", "--scenarios-dir", sets_dir, "--set", "nope"]) == 2
