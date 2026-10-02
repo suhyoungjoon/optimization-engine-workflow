@@ -6,6 +6,8 @@
   2) 3단계 시간 허용 오차 60→75분 (valid): 결함 조합이 달라도 효과가 남는다
   3) 전역 9km (허용 범위 밖, invalid) 4) 명세 수정 (unsupported)
   5) solver 엔진만: 희망시각 차이 감점 5→8 (목적함수 가중치)
+- 탐색 agent: params를 조회하고 3단계 시간 허용 오차 60~100분, 3단계 지역 범위 2~5km를 탐색 범위로 낸다
+  (solver면 희망시각 차이 감점 2~10을 더한다). 조합을 풀어 보고 고르는 것은 코드다.
 
 가짜 LLM은 tests/fake_llm.py(코어 레포 tests/의 사본)를 쓰므로 레포 루트에서 실행한다.
 """
@@ -83,6 +85,22 @@ def _proposer(n, messages):
     ]})
 
 
+SEARCH_SPACE = [
+    {"path": "matching.time_window_min[2]", "low": 60, "high": 100, "reason": "F1: 오전 용량 부족을 시간 완화로 흡수"},
+    {"path": "matching.area_extension_km[2]", "low": 2, "high": 5, "reason": "F3: 경계 지역 OUT_OF_AREA"},
+]
+SOLVER_SPACE = [{"path": "objective.time_diff_per_min", "low": 2, "high": 10, "reason": "희망시간 일치와 할당의 균형"}]
+
+
+def _searcher(n, messages):
+    if n == 0:
+        return tool_use("get_params", {})
+    params = _tool_outputs(messages)[0]["params"]
+    return tool_use("submit_search_space", {
+        "rationale": "리허설: 발견 F1·F3의 원인으로 보이는 매칭 범위를 넓혀 보되, 얼마나 넓힐지는 탐색에 맡긴다",
+        "space": SEARCH_SPACE + (SOLVER_SPACE if "objective" in params else [])})
+
+
 def policy(item, n, messages, tools):
     # FakeLLM의 n은 문자열 메시지 대화 전체를 하나로 센다. 분석·제안 대화를 따로 세려고 이 대화의 턴 수를 쓴다
     n = sum(1 for m in messages if m["role"] == "assistant")
@@ -91,6 +109,8 @@ def policy(item, n, messages, tools):
         return _analyst(n, messages)
     if "submit_proposals" in names:
         return _proposer(n, messages)
+    if "submit_search_space" in names:
+        return _searcher(n, messages)
     raise AssertionError(f"리허설 정책이 모르는 호출: {sorted(names)}")
 
 

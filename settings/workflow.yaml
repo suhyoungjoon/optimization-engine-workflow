@@ -3,9 +3,18 @@
 llm:
   analyze_max_calls: 30        # 2. 결과분석: 분석 agent의 LLM 호출 상한 (코어 analyze의 max_calls)
   propose_max_calls: 20        # 3. 개선안 도출: 개선 agent의 LLM 호출 상한 (코어 propose의 max_calls)
+  search_max_calls: 10         # 4. 파라미터 탐색: 범위를 정하는 agent의 LLM 호출 상한
+
+search:                        # 4. 파라미터 탐색: AI가 낸 범위 안의 조합을 학습용 세트에서 풀어 본다 (검증용 세트는 쓰지 않음)
+  max_evals: 40                # 평가할 조합 수 상한
+  max_seconds: 300             # 탐색 시간 예산. 넘으면 탐색을 멈추고 그때까지의 결과로 고른다 (실행은 계속)
+  top_k: 2                     # 검증으로 넘길 안 수 (학습용 판정을 통과한 조합 중 목표 지표가 좋은 순)
+  max_dims: 3                  # 한 번에 찾는 파라미터 수 (1~5)
+  seed: 0                      # 표본 추출 seed (같은 값이면 같은 조합을 같은 순서로 평가)
+  guard_margin: 0.8            # 탐색 중에는 부작용 한도의 이 비율까지만 쓴다 (검증용에서 한도를 넘지 않게 여유를 둔다)
 
 validation:
-  max_seconds: 300             # 4. 검증 시간 예산 (모든 개선안·케이스 합계). 넘으면 실행을 failed로 남긴다
+  max_seconds: 300             # 5. 검증 시간 예산 (모든 개선안·케이스 합계). 넘으면 실행을 failed로 남긴다
 
 # 판정 기준: 도전자가 챔피언을 대체해도 되는지. 학습용·검증용 세트 모두에서 통과해야 한다.
 # 필수조건 위반 0건(도메인 팩 validate)은 절대 기준이라 여기서 바꿀 수 없다.
@@ -22,7 +31,8 @@ scenarios:                     # 기본 시나리오 세트 (scenarios/<이름>.
 # 엔진별 예외: 위 기본값에 덮어쓴다 (워크플로우 코드는 엔진 이름을 모르고 이 설정만 읽는다)
 engines:
   solver:                      # 1회 풀이가 15초 안팎(규칙 엔진은 0.1초)이라 예산을 늘리고 세트를 줄인다
-    validation: {max_seconds: 1200}
+    validation: {max_seconds: 1800}   # 개선안 + 탐색 후보: 안 하나가 운영용 세트 9건 × 15초
+    search: {max_evals: 12, max_seconds: 900}   # 조합 하나가 학습용 3건 × 15초
     llm: {propose_max_calls: 5}   # 개선 agent의 시험 시뮬레이션 1회가 solver 2회 풀이
     scenarios: {train: solver_train, holdout: solver_holdout}
 

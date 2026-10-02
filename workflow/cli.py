@@ -84,6 +84,14 @@ def print_status(store: RunStore, run_id: str) -> None:
         for item in p["proposals"]:
             why = f"  ({'; '.join(item['errors'])})" if item["errors"] else ""
             print(f"            [{item['id']}] {item['state']:11s} {item['proposal'].get('title')}{why}")
+    if (f := store.load_stage(run_id, "search")):
+        print(f"{head['search']}  {_search_line(f)}")
+        for d in f.get("space") or []:
+            print(f"            범위 {d.get('path')}: {d.get('low')} ~ {d.get('high')}")
+        for e in f["space_errors"]:
+            print(f"            - {e}")
+        for c in f["candidates"]:
+            print(f"            [{c['id']}] {c['state']:11s} {c['proposal']['title']}")
     if (v := store.load_stage(run_id, "validation")):
         metrics = _judged_metrics(v["judgment"])
         print(f"{head['validation']}  학습용·검증용 케이스별 챔피언/도전자 비교, 두 세트 모두 통과해야 판정 통과")
@@ -106,6 +114,14 @@ def print_status(store: RunStore, run_id: str) -> None:
     if run["status"] == "awaiting_approval":
         print(f"\n승인: python -m workflow approve {run_id} [--proposal N]   반려: python -m workflow reject "
               f"{run_id} --reason ...")
+
+
+def _search_line(f: dict) -> str:
+    stop = {"max_evals": "평가 수 상한", "max_seconds": "시간 예산", "exhausted": "범위를 다 봄",
+            "no_space": "탐색 범위 없음"}.get(f["stop"], f["stop"])
+    passed = sum(e["pass"] for e in f["evals"])
+    return (f"조합 {len(f['evals'])}개 평가 (학습용 판정 통과 {passed}개), 후보 {len(f['candidates'])}개, "
+            f"멈춘 이유: {stop}, LLM {f['agent']['usage']['llm_calls']}회")
 
 
 def print_models(registry: Registry) -> None:

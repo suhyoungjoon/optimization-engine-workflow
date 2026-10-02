@@ -42,8 +42,8 @@ def awaiting(ws):
 def test_run_stops_at_awaiting_approval_and_records_reproduction_info(ws, awaiting):
     run = awaiting
     assert run["status"] == "awaiting_approval"
-    assert [h["status"] for h in run["history"]] == ["running", "analyzed", "proposed", "validated",
-                                                      "awaiting_approval"]
+    assert [h["status"] for h in run["history"]] == ["running", "analyzed", "proposed", "searched",
+                                                      "validated", "awaiting_approval"]
     assert _reg(ws).versions() == [1] and _reg(ws).champion() == 1          # 승인 전에는 레지스트리 그대로
     assert run["engine"] == "rule" and run["model"] == "rule@v1" and run["champion_version"] == 1
     assert [c["seed"] for c in run["scenarios"]["train"]["cases"]] == [1, 2]
@@ -69,7 +69,9 @@ def test_judgment_filters_effect_that_vanishes_on_holdout(ws, awaiting):
 
 
 def test_approve_registers_new_champion_and_rollback_restores(ws, awaiting):
-    done = runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], note="ok")   # 통과 안이 하나라 자동 선택
+    with pytest.raises(runner.WorkflowError, match=r"판정 통과: \[2, 5, 6\]"):   # 통과 안이 여럿이면 사람이 고른다
+        runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])
+    done = runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=2, note="ok")
     reg = _reg(ws)
     assert done["status"] == "applied" and reg.versions() == [1, 2] and reg.champion() == 2
     params = yaml.safe_load(reg.params_path(2).read_text(encoding="utf-8"))
@@ -113,18 +115,18 @@ def test_unvalidated_proposals_cannot_be_approved(ws, awaiting, proposal_id):
 
 def test_champion_change_makes_pending_run_stale(ws, awaiting):
     second = _run(ws)
-    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])
+    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=2)
     with pytest.raises(runner.WorkflowError, match="v1에서 v2로"):
-        runner.approve(runs_dir=ws["runs"], run_id=second["run_id"])
+        runner.approve(runs_dir=ws["runs"], run_id=second["run_id"], proposal_id=2)
     runner.rollback(models_dir=ws["models"], engine="rule", reason="back")
-    runner.approve(runs_dir=ws["runs"], run_id=second["run_id"])            # 챔피언이 다시 v1이면 유효
+    runner.approve(runs_dir=ws["runs"], run_id=second["run_id"], proposal_id=2)            # 챔피언이 다시 v1이면 유효
     assert _reg(ws).versions() == [1, 2, 3] and _reg(ws).card(3)["parent"] == 1
 
 
 def test_approve_twice_and_reject(ws, awaiting):
-    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])
+    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=2)
     with pytest.raises(runner.WorkflowError, match="승인 대기 상태가 아니다"):
-        runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])
+        runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=2)
     other = _run(ws)
     done = runner.reject(runs_dir=ws["runs"], run_id=other["run_id"], reason="부작용이 크다")
     assert done["status"] == "rejected" and _reg(ws).versions() == [1, 2]
@@ -133,13 +135,13 @@ def test_approve_twice_and_reject(ws, awaiting):
 def test_registry_lock_blocks_concurrent_decisions(ws, awaiting):
     lock = ws["models"] / "rule" / ".lock"
     lock.touch()
-    for call in (lambda: runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"]),
+    for call in (lambda: runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=2),
                  lambda: runner.reject(runs_dir=ws["runs"], run_id=awaiting["run_id"], reason="x"),
                  lambda: runner.rollback(models_dir=ws["models"], engine="rule", reason="x")):
         with pytest.raises(runner.WorkflowError, match="진행 중"):
             call()
     lock.unlink()
-    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"])
+    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=2)
     assert _reg(ws).champion() == 2 and not lock.exists()
 
 
@@ -149,7 +151,7 @@ def test_run_id_cannot_escape_runs_dir(ws, tmp_path, bad_id):
     (tmp_path / "outside" / "run.json").write_text('{"status": "awaiting_approval"}', encoding="utf-8")
     ws["runs"].mkdir()
     with pytest.raises(runner.WorkflowError, match="찾을 수 없음"):
-        runner.approve(runs_dir=ws["runs"], run_id=bad_id)
+        runner.approve(runs_dir=ws["runs"], run_id=bad_id, proposal_id=2)
 
 
 # --- 실패 기록 ---
@@ -171,7 +173,7 @@ def test_bad_judgment_config_fails_in_setup(ws):
     ws["settings"]["judgment"]["target"]["min_improvement"] = "high"
     with pytest.raises(ValueError):
         _run(ws)
-    assert _failed_reason(ws).startswith("setup: ValueError: 판정 기준 설정 오류")
+    assert _failed_reason(ws).startswith("setup: ValueError: 설정 오류: judgment")
 
 
 def test_missing_settings_fail_in_setup(ws):
@@ -232,7 +234,8 @@ def test_progress_writes_stage_changes_even_within_the_throttle(ws, tmp_path):
 
 def test_engine_overrides_apply_on_top_of_defaults():
     from workflow.config import for_engine, settings_errors
-    s = {"llm": {"analyze_max_calls": 30, "propose_max_calls": 20}, "validation": {"max_seconds": 300},
+    s = {"llm": {"analyze_max_calls": 30, "propose_max_calls": 20, "search_max_calls": 10},
+         "search": SETTINGS_FOR_TEST["search"], "validation": {"max_seconds": 300},
          "judgment": SETTINGS_FOR_TEST["judgment"], "scenarios": {"train": "train", "holdout": "holdout"},
          "engines": {"solver": {"validation": {"max_seconds": 1200}, "scenarios": {"train": "solver_train", "holdout": "solver_holdout"}}}}
     assert for_engine(s, "solver")["validation"] == {"max_seconds": 1200}
@@ -245,4 +248,25 @@ def test_engine_overrides_apply_on_top_of_defaults():
 
 
 def test_run_records_effective_limits(ws, awaiting):
-    assert awaiting["limits"] == {"llm": SETTINGS_FOR_TEST["llm"], "validation": SETTINGS_FOR_TEST["validation"]}
+    assert awaiting["limits"] == {"llm": SETTINGS_FOR_TEST["llm"], "validation": SETTINGS_FOR_TEST["validation"],
+                                  "search": {**SETTINGS_FOR_TEST["search"], "max_evals": 6}}
+
+
+def test_search_budget_stops_the_search_not_the_run(ws):
+    ws["settings"]["search"]["max_seconds"] = 1e-9                 # 인스턴스를 만들기도 전에 예산을 넘긴다
+    run = _run(ws)
+    found = RunStore(ws["runs"]).load_stage(run["run_id"], "search")
+    assert run["status"] == "awaiting_approval" and found["stop"] == "max_seconds" and found["candidates"] == []
+
+
+def test_approving_a_search_candidate_registers_its_values(ws, awaiting):
+    found = RunStore(ws["runs"]).load_stage(awaiting["run_id"], "search")
+    top = found["candidates"][0]
+    assert top["origin"] == {"by": "search", "rank": 1, "eval": top["origin"]["eval"]}
+    runner.approve(runs_dir=ws["runs"], run_id=awaiting["run_id"], proposal_id=top["id"])
+    reg = _reg(ws)
+    params = yaml.safe_load(reg.params_path(2).read_text(encoding="utf-8"))
+    for change in top["proposal"]["params_changes"]:
+        section, key = change["path"].split("[")[0].split(".")
+        assert params[section][key][2] == change["value"]
+    assert reg.card(2)["origin"]["by"] == "search" and reg.card(2)["proposal_id"] == top["id"]

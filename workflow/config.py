@@ -13,9 +13,10 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from .judge import check_config
+from .search import search_errors
 from .scenarios import check_disjoint, parse_set
 
-EDITABLE = ("llm", "validation", "judgment", "scenarios", "engines")
+EDITABLE = ("llm", "search", "validation", "judgment", "scenarios", "engines")
 SET_NAME = re.compile(r"^[a-z0-9_]+$")
 
 
@@ -53,7 +54,7 @@ def _section_errors(settings: dict) -> list[str]:
     if errors:   # 모양이 틀리면 값 검사를 하지 않는다 (예외 대신 오류 목록)
         return errors
     llm = settings.get("llm") or {}
-    for key in ("analyze_max_calls", "propose_max_calls"):
+    for key in ("analyze_max_calls", "propose_max_calls", "search_max_calls"):
         if not _positive_int(llm.get(key)):
             errors.append(f"llm.{key}는 1 이상의 정수여야 한다")
     seconds = (settings.get("validation") or {}).get("max_seconds")
@@ -63,7 +64,7 @@ def _section_errors(settings: dict) -> list[str]:
     for key in ("train", "holdout"):
         if not isinstance(scen.get(key), str) or not SET_NAME.match(scen[key]):
             errors.append(f"scenarios.{key}는 시나리오 세트 이름(영문 소문자·숫자·_)이어야 한다")
-    return errors + check_config(settings.get("judgment") or {})
+    return errors + search_errors(settings.get("search")) + check_config(settings.get("judgment") or {})
 
 
 def load_settings(path: str | Path) -> dict:

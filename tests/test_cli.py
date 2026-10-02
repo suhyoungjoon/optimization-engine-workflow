@@ -1,3 +1,8 @@
+import shutil
+
+import yaml
+
+from tests.conftest import ROOT
 from workflow.cli import main
 
 
@@ -5,16 +10,23 @@ def _base(ws):
     return ["--runs-dir", str(ws["runs"]), "--models-dir", str(ws["models"])]
 
 
-def test_cli_run_approve_models_rollback(ws, capsys):
+def test_cli_run_approve_models_rollback(ws, tmp_path, capsys):
     base = _base(ws)
-    assert main(base + ["run", "--rehearsal", "--train", str(ws["train"]), "--holdout", str(ws["holdout"])]) == 0
+    settings = tmp_path / "settings"
+    shutil.copytree(ROOT / "settings", settings)
+    (settings / "workflow.yaml").write_text(yaml.safe_dump(ws["settings"], allow_unicode=True), encoding="utf-8")
+    assert main(base + ["run", "--rehearsal", "--train", str(ws["train"]), "--holdout", str(ws["holdout"]),
+                        "--settings", str(settings)]) == 0
     out = capsys.readouterr().out
     assert "[awaiting_approval]" in out and "불통과 (학습용에서만 효과, 과적합)" in out and "[2] 통과" in out
+    assert "4 파라미터 탐색" in out and "조합 6개 평가" in out and "[5] 통과  탐색 1위" in out
     [run_dir] = list(ws["runs"].iterdir())
 
     assert main(base + ["approve", run_dir.name, "--proposal", "1"]) == 2
     assert "--override-verdict" in capsys.readouterr().err
-    assert main(base + ["approve", run_dir.name]) == 0
+    assert main(base + ["approve", run_dir.name]) == 2                          # 통과 안이 여럿이면 고른다
+    assert "판정 통과: [2, 5, 6]" in capsys.readouterr().err
+    assert main(base + ["approve", run_dir.name, "--proposal", "2"]) == 0
     assert "rule@v1 → rule@v2" in capsys.readouterr().out
 
     assert main(base + ["models"]) == 0

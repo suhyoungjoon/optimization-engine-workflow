@@ -1,6 +1,6 @@
 """워크플로우 실행과 사람의 결정(승인·반려·되돌리기).
 
-run_workflow는 1~4단계를 돌리고 awaiting_approval에서 멈춘다. 개선적용(5단계)은 approve로만 일어난다 (자동 승인 없음).
+run_workflow는 1~5단계를 돌리고 awaiting_approval에서 멈춘다. 개선적용(6단계)은 approve로만 일어난다 (자동 승인 없음).
 승인하면 모델 레지스트리에 새 버전을 등록하고 챔피언으로 지정한다.
 경로(모델 레지스트리, runs, 시나리오 세트)는 모두 인자로 받는다. 코어의 기본 경로(site-packages)는 쓰지 않는다.
 """
@@ -23,7 +23,8 @@ from .config import for_engine
 from .compare import BudgetExceeded
 from .judge import check_config
 from .scenarios import check_disjoint, load_set
-from .state import ANALYZED, APPLIED, AWAITING_APPROVAL, FAILED, PROPOSED, REJECTED, VALIDATED
+from .search import search_errors
+from .state import ANALYZED, APPLIED, AWAITING_APPROVAL, FAILED, PROPOSED, REJECTED, SEARCHED, VALIDATED
 from .storage import RunStore, now
 
 
@@ -91,12 +92,13 @@ def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path
         settings = for_engine(settings, engine.name)   # 엔진별 예외(검증 예산 등)를 덮어쓴다
         analyze_calls, propose_calls = settings["llm"]["analyze_max_calls"], settings["llm"]["propose_max_calls"]
         max_seconds = settings["validation"]["max_seconds"]
-        judgment = settings["judgment"]
-        errors = check_config(judgment)
+        judgment, search = settings["judgment"], settings.get("search")
+        errors = check_config(judgment) + search_errors(search)
         if errors:
-            raise ValueError("판정 기준 설정 오류: " + "; ".join(errors))
+            raise ValueError("설정 오류: " + "; ".join(errors))
         store.update(run_id, model=model_name(engine.name, champion), champion_version=champion,
-                     scenarios=sets, limits={"llm": settings["llm"], "validation": settings["validation"]})
+                     scenarios=sets, limits={"llm": settings["llm"], "search": search,
+                                             "validation": settings["validation"]})
 
         progress = _progress_writer(store, run_id)
         stage = "run"
@@ -117,13 +119,22 @@ def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path
         progress("proposals", 0, 1, "개선 agent 실행 중")
         out = stages.proposal_stage(engine, pack, instance, params, report, llm, llm_config, propose_calls)
         store.save_stage(run_id, "proposals", out)
-        if not any(p["state"] == stages.VALID for p in out["proposals"]):
-            return store.set_status(run_id, FAILED, f"개선안 도출: 검증할 params 안 없음 (stop={out['stop']})")
         store.set_status(run_id, PROPOSED)
+
+        stage = "search"
+        progress("search", 0, 1, "탐색 범위 agent 실행 중")
+        found = stages.search_stage(engine, params, report, sets["train"]["cases"], judgment, search, llm, llm_config,
+                                    settings["llm"]["search_max_calls"], len(out["proposals"]) + 1, progress)
+        store.save_stage(run_id, "search", found)
+        candidates = out["proposals"] + found["candidates"]
+        if not any(p["state"] == stages.VALID for p in candidates):
+            return store.set_status(run_id, FAILED, f"파라미터 탐색: 검증할 params 안 없음 "
+                                                    f"(개선안 도출 stop={out['stop']}, 탐색 stop={found['stop']})")
+        store.set_status(run_id, SEARCHED)
 
         stage = "validation"
         try:
-            validation = stages.validation_stage(engine, params, out["proposals"], report, sets, judgment,
+            validation = stages.validation_stage(engine, params, candidates, report, sets, judgment,
                                                  max_seconds, progress)
         except BudgetExceeded as exc:
             return store.set_status(run_id, FAILED, f"검증: {exc}")
@@ -144,6 +155,12 @@ def _awaiting(store: RunStore, run_id: str) -> dict:
     if run["status"] != AWAITING_APPROVAL:
         raise WorkflowError(f"{run_id}는 승인 대기 상태가 아니다 (현재 {run['status']})")
     return run
+
+
+def _candidates(store: RunStore, run_id: str) -> list[dict]:
+    """검증 대상이 될 수 있는 안: 개선 agent의 안(사람 수정안 포함) + 탐색 후보. 이전 실행에는 탐색 기록이 없다."""
+    found = store.load_stage(run_id, "search") or {}
+    return store.load_stage(run_id, "proposals")["proposals"] + found.get("candidates", [])
 
 
 def _registry(run: dict) -> Registry:
@@ -186,7 +203,7 @@ def _approve_locked(store: RunStore, registry: Registry, run_id: str, proposal_i
         raise WorkflowError(f"챔피언이 v{run['champion_version']}에서 v{champion}로 바뀌었다. "
                             "이 실행의 비교 결과는 더 이상 유효하지 않으니 새로 실행한다")
 
-    proposal = next(p for p in store.load_stage(run_id, "proposals")["proposals"] if p["id"] == proposal_id)
+    proposal = next(p for p in _candidates(store, run_id) if p["id"] == proposal_id)
     version = registry.register(champion, proposal["proposal"], {
         "run_id": run_id, "proposal_id": proposal_id, "proposal": proposal["proposal"],
         "scenarios": {k: {"name": s["name"], "path": s["path"], "cases": s["cases"]}
@@ -253,8 +270,7 @@ def revise(*, runs_dir: str | Path, run_id: str, proposal_id: int, changes: dict
     run = _awaiting(store, run_id)
     if not isinstance(changes, dict):
         raise WorkflowError("changes는 {params_changes, override_rules} 형태여야 한다")
-    proposals = store.load_stage(run_id, "proposals")
-    original = next((p for p in proposals["proposals"] if p["id"] == proposal_id), None)
+    original = next((p for p in _candidates(store, run_id) if p["id"] == proposal_id), None)
     if original is None or original["state"] != stages.VALID:
         raise WorkflowError(f"개선안 {proposal_id}는 수정할 수 없다 (검증된 params 안만 수정한다)")
     edited = {"params_changes": copy.deepcopy(changes.get("params_changes") or []),
@@ -293,7 +309,7 @@ def revise(*, runs_dir: str | Path, run_id: str, proposal_id: int, changes: dict
             _awaiting(store, run_id)   # 재검증하는 동안 승인·반려되었으면 기록하지 않는다
             proposals = store.load_stage(run_id, "proposals")
             validation = store.load_stage(run_id, "validation")
-            entry["id"] = max(p["id"] for p in proposals["proposals"]) + 1
+            entry["id"] = max(p["id"] for p in _candidates(store, run_id)) + 1
             result["id"] = entry["id"]
             proposals["proposals"].append(entry)
             validation["results"].append({**result, "origin": origin})

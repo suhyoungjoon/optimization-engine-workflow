@@ -1,12 +1,12 @@
 # optimization-engine-workflow
 
-최적화 엔진("모델")을 대상으로 **실행 → 결과분석 → 개선안 도출 → 검증(챔피언/도전자) → 개선적용**을 반복하는 워크플로우 agent.
+최적화 엔진("모델")을 대상으로 **실행 → 결과분석 → 개선안 도출 → 파라미터 탐색 → 검증(챔피언/도전자) → 개선적용**을 반복하는 워크플로우 agent.
 기존 레포 `optimization-agent-harness`(이하 **코어 레포**)의 코어를 패키지로 설치해 재사용한다.
 전체 기획은 `docs/plan.md`, 코어 사용법은 `docs/handoff.md`(코어 레포 문서의 사본)를 본다.
 
 ## 핵심 원칙 (반드시 지킬 것)
 
-1. **AI는 제안하고, 코드는 검증하고, 사람은 결정한다.** LLM은 분석과 개선안 도출에만 쓴다. 단계 순서, 허용 범위 검사, 시뮬레이션, 비교 판정은 코드가 한다.
+1. **AI는 제안하고, 코드는 검증하고, 사람은 결정한다.** LLM은 분석, 개선안 도출, 탐색 범위 제안에만 쓴다. 단계 순서, 허용 범위 검사, 시뮬레이션, 탐색, 비교 판정은 코드가 한다.
 2. **개선적용 앞에서는 반드시 멈춘다.** 승인 대기 상태로 저장하고, 사람이 승인 명령을 내려야 새 버전이 챔피언이 된다. 자동 승인 금지.
 3. **필수조건 판정은 항상 도메인 팩의 `validate()`로 한다.** 엔진(규칙·solver·학습형)이 제약을 자체적으로 지키더라도 결과는 `validate()`로 독립 검증한다.
 4. **엔진은 교체 가능해야 한다.** 워크플로우 코드는 특정 엔진을 몰라야 한다. 엔진은 `DomainPack.solve` 계약(handoff 5장)을 따르는 어댑터로만 붙인다.
@@ -45,8 +45,9 @@ runs/            실행 결과·DB·LLM 캐시 (git 제외)
 | 1. 실행 | 코드 | `pack.solve`, `validate`, `metrics` |
 | 2. 결과분석 | AI + 코드 | `analyze`, `Aggregator`, 근거 검사 |
 | 3. 개선안 도출 | AI + 코드 | `propose`, `params_errors` |
-| 4. 검증(비교) | 코드 | `simulate_params`를 학습용·검증용 세트의 케이스마다 실행, `workflow/judge.py`로 판정 |
-| 5. 개선적용 | 사람 + 코드 | 레지스트리(`modelreg`)에 새 버전 등록(부모 복사 + `write_params`), 챔피언 지정. 되돌리기는 `rollback` |
+| 4. 파라미터 탐색 | AI + 코드 | AI가 범위 제안(`run_tool_loop`), 코드가 `params_errors`로 범위 검사 후 `workflow/search.py`로 학습용 세트에서 조합 탐색 (검증용은 쓰지 않음) |
+| 5. 검증(비교) | 코드 | `simulate_params`를 학습용·검증용 세트의 케이스마다 실행, `workflow/judge.py`로 판정 |
+| 6. 개선적용 | 사람 + 코드 | 레지스트리(`modelreg`)에 새 버전 등록(부모 복사 + `write_params`), 챔피언 지정. 되돌리기는 `rollback` |
 
 ## 기술 스택
 
@@ -58,9 +59,10 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 - API 키는 `.env`. `.env`, `runs/`는 커밋하지 않는다.
 - LLM 경로는 가짜 LLM(`tests/fake_llm.py`) 테스트를 먼저 만든다. 실제 API 실행은 사람이 요청할 때만.
 - 결정적인 부분(시나리오 생성, 비교 판정, 레지스트리)은 테스트를 먼저 작성한다.
-- 반복·비용 상한은 `settings/workflow.yaml`에서 읽는다 (개선 루프 횟수, 단계별 LLM 호출 수). 엔진마다 다른 값은 `engines.<엔진>`에 두고, 워크플로우 코드에 엔진 이름을 쓰지 않는다.
+- 반복·비용 상한은 `settings/workflow.yaml`에서 읽는다 (단계별 LLM 호출 수, 탐색 평가 수·시간, 검증 시간). 엔진마다 다른 값은 `engines.<엔진>`에 두고, 워크플로우 코드에 엔진 이름을 쓰지 않는다.
 - solver는 결정성을 지킨다: 단일 스레드·고정 seed·결정적 시간 한도(`objective.time_limit`). 문제끼리는 독립이라 병렬로 풀어도 결과가 같다(`SOLVER_THREADS`로 스레드 수 조정).
   결정적이라 풀이 결과를 `runs/solver_cache/`에 저장해 다시 쓴다(키: 인스턴스·params·`engines/solver/model.py`·OR-Tools 버전, `SOLVER_CACHE_DIR=`로 끔, `warm`으로 미리 채움). 새 개선안의 풀이는 매번 새로 계산한다. 시연용 세트(`demo_*`)는 케이스마다 `items`로 앞 N건만 쓴다.
+- 탐색(`workflow/search.py`)은 결정적이다: 고정 seed의 Halton 표본 + 가장 좋은 점 주변 재탐색. 점수는 판정 규칙을 쓰되 부작용 한도는 `search.guard_margin`만큼만 쓴다. 탐색 후보는 `3b_search.json`에 두고, 개선안과 같은 번호 체계로 검증·승인한다.
 - 커밋 메시지: `[M1] workflow: add run stage` 형식.
 
 ## 명령어
@@ -69,10 +71,10 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 pip install -e ".[dev]"      # 코어 포함 설치 (pyproject.toml에 코어를 커밋 1343534로 고정)
 pytest
 python -m workflow run --engine rule --rehearsal                   # 가짜 LLM으로 한 바퀴 (엔진별 기본 세트), 승인 대기에서 정지
-python -m workflow run --engine solver --rehearsal                 # solver로 한 바퀴 (solver_train·solver_holdout, 약 10분)
-python -m workflow run --engine solver --rehearsal --train scenarios/demo_train.yaml --holdout scenarios/demo_holdout.yaml   # 시연용 (처음 약 40초, 반복하면 몇 초)
+python -m workflow run --engine solver --rehearsal                 # solver로 한 바퀴 (solver_train·solver_holdout, 탐색 포함 약 25분)
+python -m workflow run --engine solver --rehearsal --train scenarios/demo_train.yaml --holdout scenarios/demo_holdout.yaml   # 시연용 (처음 약 1분 40초, 반복하면 몇 초)
 python -m workflow status [<run_id>]                               # 실행 목록 / 단계별 결과·판정
-python -m workflow approve <run_id> [--proposal N] [--note ...]    # 사람 승인 (판정 통과 안이 하나면 --proposal 생략)
+python -m workflow approve <run_id> [--proposal N] [--note ...]    # 사람 승인 (판정 통과 안이 하나면 --proposal 생략. 탐색 후보도 번호로 고른다)
 python -m workflow approve <run_id> --proposal N --override-verdict --reason ...   # 판정 불통과 안을 사유와 함께 승인 (위반 안은 불가)
 python -m workflow reject <run_id> --reason ...                    # 사람 반려 (기록만)
 python -m workflow models [--engine rule]                          # 모델 버전·챔피언 이력

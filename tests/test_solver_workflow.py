@@ -28,19 +28,25 @@ def _fast_solver(ws):
 
 def test_solver_runs_through_the_same_workflow(ws, tmp_path):
     _fast_solver(ws)
+    ws["settings"]["engines"]["solver"]["search"]["max_evals"] = 4      # 테스트 속도 (엔진별 예외가 기본값보다 우선)
     train = write_set(tmp_path / "s_train.yaml", "s_train", [(1, P1_P4)])
     holdout = write_set(tmp_path / "s_holdout.yaml", "s_holdout", [(201, ["P1", "P2", "P3"])])
     run = runner.run_workflow(get_engine("solver"), models_dir=ws["models"], runs_dir=ws["runs"], train_path=train,
                               holdout_path=holdout, llm=rehearsal_llm(), llm_config=ws["llm_config"],
                               settings=ws["settings"], rehearsal=True)
     assert run["status"] == "awaiting_approval" and run["model"] == "solver@v1"
-    assert run["limits"]["validation"]["max_seconds"] == 1200                  # 엔진별 예외가 적용됨
+    assert run["limits"]["validation"]["max_seconds"] == 1800                  # 엔진별 예외가 적용됨
+    assert run["limits"]["search"]["max_evals"] == 4
     store = RunStore(ws["runs"])
     proposals = store.load_stage(run["run_id"], "proposals")["proposals"]
     assert [p["state"] for p in proposals] == ["valid", "valid", "invalid", "unsupported", "valid"]
     assert proposals[-1]["proposal"]["params_changes"][0]["path"] == "objective.time_diff_per_min"
     results = store.load_stage(run["run_id"], "validation")["results"]
-    assert [r["id"] for r in results] == [1, 2, 5] and all(r["violations"] == 0 for r in results)
+    found = store.load_stage(run["run_id"], "search")
+    assert [d["path"] for d in found["space"]][-1] == "objective.time_diff_per_min"   # solver면 가중치도 탐색
+    assert len(found["evals"]) == 4 and all(c["id"] >= 6 for c in found["candidates"])
+    assert [r["id"] for r in results] == [1, 2, 5] + [c["id"] for c in found["candidates"]]
+    assert all(r["violations"] == 0 for r in results)
 
     pick = next((r for r in results if r["verdict"]["pass"]), results[-1])
     runner.approve(runs_dir=ws["runs"], run_id=run["run_id"], proposal_id=pick["id"],
