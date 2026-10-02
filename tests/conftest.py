@@ -30,3 +30,9 @@ def ws(tmp_path):
             "holdout": write_set(tmp_path / "holdout.yaml", "holdout-no-p4", [(201, ["P1", "P2", "P3"]), (202, [])]),
             "settings": copy.deepcopy(SETTINGS),
             "llm_config": load_config(ROOT / "settings" / "llm.yaml")}
+
+
+@pytest.fixture(autouse=True)
+def _no_solver_disk_cache(monkeypatch):
+    """테스트는 runs/solver_cache를 쓰지 않는다 (디스크 캐시 테스트만 임시 폴더로 켠다)."""
+    monkeypatch.setenv("SOLVER_CACHE_DIR", "")

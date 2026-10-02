@@ -90,3 +90,21 @@ def test_metrics_and_validate_come_from_core_pack(setup):
     core = get_engine("rule").pack_factory(params)
     assert pack.metrics(small, records) == core.metrics(small, records)
     assert pack.dimensions() == core.dimensions()
+
+
+def test_disk_cache_reuses_results_across_processes(setup, tmp_path, monkeypatch):
+    _engine, params, pack, small = setup
+    monkeypatch.setenv("SOLVER_CACHE_DIR", str(tmp_path / "cache"))
+    clear_cache()
+    first = pack.solve(small, params)
+    assert len(list((tmp_path / "cache").glob("*.json"))) == 1
+    clear_cache()                                               # 메모리 캐시가 없는 새 프로세스와 같다
+    calls = []
+    monkeypatch.setattr("engines.solver.solve_instance", lambda *a, **k: calls.append(1))
+    again = pack.solve(small, params)
+    assert calls == [] and _key(again) == _key(first)
+    other = copy.deepcopy(params)
+    other["objective"]["master"] += 1                           # params가 다르면 다시 푼다
+    monkeypatch.setattr("engines.solver.solve_instance", lambda *a, **k: calls.append(1) or first)
+    pack.solve(small, other)
+    assert calls == [1]
