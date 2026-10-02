@@ -48,7 +48,10 @@ def settings_errors(settings: dict) -> list[str]:
 
 
 def _section_errors(settings: dict) -> list[str]:
-    errors = []
+    errors = [f"{k}는 {{키: 값}} 형태여야 한다" for k in ("llm", "validation", "scenarios")
+              if not isinstance(settings.get(k) or {}, dict)]
+    if errors:   # 모양이 틀리면 값 검사를 하지 않는다 (예외 대신 오류 목록)
+        return errors
     llm = settings.get("llm") or {}
     for key in ("analyze_max_calls", "propose_max_calls"):
         if not _positive_int(llm.get(key)):

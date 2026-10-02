@@ -1181,6 +1181,7 @@ function comparisonsCard() {
         h("span", { class: "spacer" }), setSel, start),
       h("p", { class: "small ink-2", style: "margin:0 0 10px" }, "엔진마다 현재 챔피언을 같은 시나리오 세트의 같은 인스턴스로 풀어 비교한다. 필수조건은 모두 도메인 팩의 validate()로 센다."),
       data.running ? h("div", { class: "row small" }, h("span", { class: "spinner" }), `${data.running.detail} (${data.running.done}/${data.running.total})`) : null,
+      data.error ? h("div", { class: "error-box", style: "margin-bottom:10px" }, `마지막 비교 실패: ${data.error}`) : null,
       latest ? comparisonTable(latest) : h("div", { class: "empty" }, "아직 비교 결과가 없다.")].filter(Boolean));
     if (data.running) setTimeout(() => { if (location.hash.startsWith("#/models")) draw(); }, 2000);
   };

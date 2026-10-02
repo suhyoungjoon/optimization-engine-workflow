@@ -164,6 +164,9 @@ def test_malformed_bodies_are_400_not_500(ui):
     assert client.put("/api/scenarios/train", json={"cases": ["x"]}).status_code == 400
     assert client.put("/api/settings", json={"llm": 5}).status_code == 400
     assert client.put("/api/settings", json={"judgment": []}).status_code == 400
+    assert client.put("/api/settings", json={"judgment": {"target": "assignment_rate"}}).status_code == 400
+    assert client.put("/api/settings", json={"engines": {"solver": {"judgment": {"target": "x"}}}}).status_code == 400
+    assert client.put("/api/settings", json={"engines": {"solver": {"validation": 5}}}).status_code == 400
     run_id = client.post("/api/runs", json={}).json()["run_id"]
     _wait(client, run_id)
     assert client.post(f"/api/runs/{run_id}/revise", json={"proposal_id": 2, "changes": []}).status_code == 400
@@ -195,3 +198,16 @@ def test_comparisons_api(ui):
     latest = data["items"][0]
     assert latest["engines"] == ["rule"] and latest["set"]["name"] == "holdout" and len(latest["cases"]) == 2
     assert client.post("/api/comparisons", json={"engines": ["x"]}).status_code == 404
+    assert client.post("/api/comparisons", json={"engines": 5}).status_code == 400
+
+
+def test_failed_comparison_is_reported(ui):
+    client, tmp, _ = ui
+    (tmp / "scenarios" / "broken.yaml").write_text("name: broken\ncases: []\n", encoding="utf-8")
+    assert client.post("/api/comparisons", json={"engines": ["rule"], "set": "broken"}).status_code == 200
+    for _ in range(200):
+        data = client.get("/api/comparisons").json()
+        if not data["running"]:
+            break
+        time.sleep(0.05)
+    assert "cases가 비어 있다" in data["error"] and data["items"] == []

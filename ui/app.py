@@ -242,12 +242,14 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
     @app.get("/api/comparisons")
     def comparisons():
         items = sorted(comparisons_dir.glob("*.json"), reverse=True) if comparisons_dir.is_dir() else []
-        return {"running": comparing.get("progress"),
+        return {"running": comparing.get("progress"), "error": comparing.get("error"),
                 "items": [json.loads(p.read_text(encoding="utf-8")) for p in items[:10]]}
 
     @app.post("/api/comparisons")
     def start_comparison(body: dict = Body(default={})):
         names = body.get("engines") or list(ENGINES)
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise HTTPException(400, "engines는 엔진 이름 목록이어야 한다")
         engines = [engine_or_404(n) for n in names]
         path = set_path(body.get("set") or engine_settings(names[-1])["scenarios"]["holdout"])
         with lock:   # 실행과 같은 자리를 쓴다: 무거운 계산은 한 번에 하나
@@ -259,9 +261,12 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
                     result = compare_engines(engines, models_dir=models_dir, set_path=path,
                                              progress=lambda d, t, m: comparing.update(progress={"done": d, "total": t, "detail": m}))
                     save_comparison(runs_dir, result)
+                except Exception as exc:   # 백그라운드 실패를 화면에 알린다 (다음 비교를 시작하면 지운다)
+                    comparing["error"] = f"{type(exc).__name__}: {exc}"
                 finally:
                     comparing.pop("progress", None)
 
+            comparing.pop("error", None)
             comparing["progress"] = {"done": 0, "total": 1, "detail": "시작"}
             active["thread"] = threading.Thread(target=target, daemon=True)
             active["thread"].start()

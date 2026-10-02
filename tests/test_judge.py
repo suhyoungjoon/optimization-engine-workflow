@@ -19,6 +19,8 @@ def test_config_validation():
     assert check_config({"target": {"metric": "rate", "min_improvement": True}})        # YAML true
     assert check_config({**CFG, "guards": {"m": {"max_drop": False}}})
     assert check_config({"target": {"metric": "rate", "min_improvement": float("nan")}})
+    for bad in ([], {"target": "rate"}, {**CFG, "guards": ["m"]}, {**CFG, "guards": {"m": 0.1}}):
+        assert check_config(bad)                                                       # 모양이 틀려도 예외가 아니라 오류 목록
 
 
 def test_pass_requires_both_sets():
