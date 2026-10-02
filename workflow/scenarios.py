@@ -1,4 +1,7 @@
-"""시나리오 세트: {seed, faults} 케이스 목록 (scenarios/*.yaml). 같은 seed·결함이면 항상 같은 인스턴스다."""
+"""시나리오 세트: {seed, faults[, items]} 케이스 목록 (scenarios/*.yaml). 같은 케이스면 항상 같은 인스턴스다.
+
+items: 처리 순서 앞쪽 N개 항목만 남긴다 (도메인 팩의 items·subset 계약). 시연처럼 빨리 보여야 할 때 쓴다.
+"""
 
 from pathlib import Path
 
@@ -27,7 +30,10 @@ def parse_set(data: dict, path: str | Path) -> dict:
             raise ValueError(f"{path}: cases[{i}].seed는 정수여야 한다")
         if not isinstance(faults, list) or not all(isinstance(f, str) for f in faults):
             raise ValueError(f"{path}: cases[{i}].faults는 문자열 목록이어야 한다")
-        out.append({"seed": seed, "faults": faults})
+        items = case.get("items")
+        if items is not None and (not isinstance(items, int) or isinstance(items, bool) or items <= 0):
+            raise ValueError(f"{path}: cases[{i}].items는 1 이상의 정수여야 한다")
+        out.append({"seed": seed, "faults": faults, **({"items": items} if items else {})})
     seeds = [c["seed"] for c in out]
     if len(set(seeds)) != len(seeds):
         raise ValueError(f"{path}: 세트 안에 같은 seed가 두 번 있다")
@@ -39,3 +45,11 @@ def check_disjoint(train: dict, holdout: dict) -> None:
     shared = sorted({c["seed"] for c in train["cases"]} & {c["seed"] for c in holdout["cases"]})
     if shared:
         raise ValueError(f"학습용과 검증용 세트가 seed를 공유한다: {shared}")
+
+
+def make_instance(pack, case: dict):
+    """케이스의 인스턴스. items가 있으면 처리 순서 앞쪽 N개만 남긴다 (정답표는 쓰지 않는다)."""
+    instance, _truth = pack.generate(case["seed"], case["faults"])
+    if case.get("items"):
+        instance = pack.subset(instance, pack.items(instance)[: case["items"]])
+    return instance

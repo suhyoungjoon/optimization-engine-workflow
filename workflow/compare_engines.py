@@ -12,7 +12,7 @@ from pathlib import Path
 from engines.base import Engine
 from modelreg import Registry
 
-from .scenarios import load_set
+from .scenarios import load_set, make_instance
 from .storage import _write, now
 
 
@@ -26,7 +26,7 @@ def compare_engines(engines: list[Engine], *, models_dir: str | Path, set_path: 
         champs.append((e, version, params, e.pack_factory(params)))
     cases, total, done = [], len(sset["cases"]) * len(engines), 0
     for case in sset["cases"]:
-        instance, _ = champs[0][3].generate(case["seed"], case["faults"])   # 같은 도메인: 한 번 만들어 모든 엔진에 쓴다
+        instance = make_instance(champs[0][3], case)   # 같은 도메인: 한 번 만들어 모든 엔진에 쓴다
         row = {**case, "engines": {}}
         for e, _v, params, pack in champs:
             started = time.time()

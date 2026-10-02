@@ -29,3 +29,26 @@ def test_overlapping_seeds_are_rejected(tmp_path):
     b = load_set(write_set(tmp_path / "b.yaml", "b", [(2, ["P1"]), (3, [])]))
     with pytest.raises(ValueError, match=r"\[2\]"):
         check_disjoint(a, b)
+
+
+def test_items_limits_the_instance(tmp_path):
+    from engines import get_engine
+    from modelreg import Registry
+    from workflow.scenarios import make_instance
+    path = tmp_path / "s.yaml"
+    path.write_text("cases:\n  - {seed: 1, faults: [P4], items: 120}\n  - {seed: 2, faults: []}\n", encoding="utf-8")
+    s = load_set(path)
+    assert s["cases"] == [{"seed": 1, "faults": ["P4"], "items": 120}, {"seed": 2, "faults": []}]
+    engine = get_engine("rule")
+    pack = engine.pack_factory(engine.load_params(Registry(ROOT / "models", "rule").params_path(1)))
+    assert len(make_instance(pack, s["cases"][0]).orders) == 120
+    assert len(make_instance(pack, s["cases"][1]).orders) == 1500
+    path.write_text("cases:\n  - {seed: 1, faults: [], items: 0}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="items"):
+        load_set(path)
+
+
+def test_demo_sets_are_small_and_paired():
+    train, holdout = load_set(ROOT / "scenarios" / "demo_train.yaml"), load_set(ROOT / "scenarios" / "demo_holdout.yaml")
+    check_disjoint(train, holdout)
+    assert all(c.get("items") for c in train["cases"] + holdout["cases"])

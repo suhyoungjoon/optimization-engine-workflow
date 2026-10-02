@@ -50,7 +50,8 @@ def _fmt(v) -> str:
 
 
 def _cases(s: dict) -> str:
-    return ", ".join(f"{c['seed']}:{'+'.join(c['faults']) or '-'}" for c in s.get("cases", []))
+    return ", ".join(f"{c['seed']}:{'+'.join(c['faults']) or '-'}{'/' + str(c['items']) + '건' if c.get('items') else ''}"
+                     for c in s.get("cases", []))
 
 
 def _judged_metrics(judgment: dict) -> list[str]:

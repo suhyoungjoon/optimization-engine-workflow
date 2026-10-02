@@ -1,0 +1,5 @@
+# 시연용 학습용 세트: 케이스 1건, 처리 순서 앞 300건(약 2일치)만 쓴다. solver 리허설이 1분 안팎에 끝난다.
+# 운영 판단에는 쓰지 않는다 (규칙 엔진은 train·holdout, solver는 solver_train·solver_holdout).
+name: demo_train
+cases:
+  - {seed: 1, faults: [P1, P2, P3, P4], items: 300}
