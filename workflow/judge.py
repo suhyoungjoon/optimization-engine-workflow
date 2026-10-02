@@ -19,14 +19,23 @@ def _number(v) -> bool:
 
 
 def check_config(cfg: dict) -> list[str]:
+    """설정의 모양이 틀려도 예외 대신 오류 목록을 돌려준다 (화면의 설정 저장이 400으로 답하도록)."""
+    if cfg is not None and not isinstance(cfg, dict):
+        return ["judgment는 {target, guards} 형태여야 한다"]
     errors = []
     target = (cfg or {}).get("target") or {}
+    if not isinstance(target, dict):
+        target = {}
+        errors.append("judgment.target은 {metric, min_improvement} 형태여야 한다")
     if not isinstance(target.get("metric"), str):
         errors.append("judgment.target.metric이 필요하다")
     if not _number(target.get("min_improvement")):
         errors.append("judgment.target.min_improvement는 숫자여야 한다")
-    for metric, limit in ((cfg or {}).get("guards") or {}).items():
-        keys = set(limit or {})
+    guards = (cfg or {}).get("guards") or {}
+    if not isinstance(guards, dict):
+        return errors + ["judgment.guards는 {지표: {max_drop 또는 max_increase}} 형태여야 한다"]
+    for metric, limit in guards.items():
+        keys = set(limit) if isinstance(limit, dict) else set()
         if len(keys) != 1 or not keys <= {"max_drop", "max_increase"}:
             errors.append(f"judgment.guards.{metric}에는 max_drop 또는 max_increase 하나만 쓴다")
         elif not _number(next(iter(limit.values()))) or next(iter(limit.values())) < 0:

@@ -1,0 +1,6 @@
+# solver 학습용 세트: solver는 1회 풀이가 15초 안팎이라 규칙 엔진 세트(5건)보다 작게 둔다.
+name: solver_train
+cases:
+  - {seed: 1, faults: [P1, P2, P3, P4]}
+  - {seed: 2, faults: [P1, P2, P3, P4]}
+  - {seed: 3, faults: [P1, P2, P3, P4]}

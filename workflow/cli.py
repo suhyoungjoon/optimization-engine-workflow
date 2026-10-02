@@ -6,6 +6,8 @@ python -m workflow approve <run_id> [--proposal N] [--note ...] [--override-verd
 python -m workflow reject <run_id> --reason ...
 python -m workflow models [--engine rule]
 python -m workflow rollback [--engine rule] [--to N] --reason ...
+python -m workflow compare-engines [--engines rule,solver] [--set NAME]
+python -m workflow warm --engine solver [--set demo_train --set demo_holdout]
 """
 
 import argparse
@@ -21,16 +23,18 @@ from engines import ENGINES, get_engine
 from modelreg import Registry, RegistryError
 
 from . import runner
+from .compare_engines import compare_engines, save_comparison
+from .config import for_engine
 from .judge import SET_LABELS
 from .pipeline import stage_labels
 from .storage import RunStore
+from .warm import warm
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RUNS = ROOT / "runs"
 DEFAULT_MODELS = ROOT / "models"
 DEFAULT_SETTINGS = ROOT / "settings"
-DEFAULT_TRAIN = ROOT / "scenarios" / "train.yaml"
-DEFAULT_HOLDOUT = ROOT / "scenarios" / "holdout.yaml"
+DEFAULT_SCENARIOS = ROOT / "scenarios"
 
 
 def _llm(rehearsal: bool, settings_dir: Path, runs_dir: Path):
@@ -48,7 +52,8 @@ def _fmt(v) -> str:
 
 
 def _cases(s: dict) -> str:
-    return ", ".join(f"{c['seed']}:{'+'.join(c['faults']) or '-'}" for c in s.get("cases", []))
+    return ", ".join(f"{c['seed']}:{'+'.join(c['faults']) or '-'}{'/' + str(c['items']) + '건' if c.get('items') else ''}"
+                     for c in s.get("cases", []))
 
 
 def _judged_metrics(judgment: dict) -> list[str]:
@@ -119,6 +124,20 @@ def print_models(registry: Registry) -> None:
         print(f"  {h['at']}  {h['action']:8s} v{h['version']}  {extra}")
 
 
+def print_comparison(result: dict) -> None:
+    names, base = result["engines"], result["base"]
+    print(f"엔진 간 비교: {result['set']['name']} ({len(result['cases'])}건), 기준 {base} (정보용, 판정·승인과 무관)")
+    print("  " + "지표".ljust(26) + "".join(result["summary"][n]["model"].rjust(14) for n in names))
+    for m in result["summary"][base]["metrics"]:
+        print("  " + m.ljust(26) + "".join(f"{result['summary'][n]['metrics'][m]:14.3f}" for n in names))
+    print("  " + "필수조건 위반".ljust(23) + "".join(f"{result['summary'][n]['violations']:14d}" for n in names))
+    print("  " + "1회 풀이 시간(초)".ljust(22) + "".join(f"{result['summary'][n]['seconds_mean']:14.2f}" for n in names))
+
+
+def _settings(settings_dir: Path) -> dict:
+    return yaml.safe_load((settings_dir / "workflow.yaml").read_text(encoding="utf-8"))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="workflow", description="최적화 엔진 개선 워크플로우")
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS)
@@ -127,8 +146,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_run = sub.add_parser("run", help="1~4단계 실행 후 승인 대기에서 멈춘다")
     p_run.add_argument("--engine", choices=ENGINES, default="rule")
-    p_run.add_argument("--train", type=Path, default=DEFAULT_TRAIN, help="학습용 시나리오 세트")
-    p_run.add_argument("--holdout", type=Path, default=DEFAULT_HOLDOUT, help="검증용 시나리오 세트")
+    p_run.add_argument("--train", type=Path, help="학습용 시나리오 세트 (기본: 설정의 엔진별 scenarios.train)")
+    p_run.add_argument("--holdout", type=Path, help="검증용 시나리오 세트 (기본: 설정의 엔진별 scenarios.holdout)")
     p_run.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
     p_run.add_argument("--rehearsal", action="store_true", help="가짜 LLM으로 실행 (API 호출 없음)")
 
@@ -155,6 +174,19 @@ def main(argv: list[str] | None = None) -> int:
     p_rollback.add_argument("--to", type=int, help="되돌릴 버전 (기본: 현재 챔피언의 부모)")
     p_rollback.add_argument("--reason", required=True)
 
+    p_cmp = sub.add_parser("compare-engines", help="엔진마다 현재 챔피언을 같은 시나리오 세트에서 비교한다 (정보용)")
+    p_cmp.add_argument("--engines", default=",".join(ENGINES), help="쉼표 구분, 첫 엔진이 기준")
+    p_cmp.add_argument("--set", help="시나리오 세트 이름 (기본: 마지막 엔진의 기본 검증용 세트)")
+    p_cmp.add_argument("--scenarios-dir", type=Path, default=DEFAULT_SCENARIOS)
+    p_cmp.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
+
+    p_warm = sub.add_parser("warm", help="현재 챔피언으로 세트를 미리 풀어 결과 캐시를 채운다 (실행 기록 없음)")
+    p_warm.add_argument("--engine", choices=ENGINES, required=True)
+    p_warm.add_argument("--set", action="append", dest="sets",
+                        help="시나리오 세트 이름, 여러 번 지정 가능 (기본: 설정의 엔진별 학습용·검증용 세트)")
+    p_warm.add_argument("--scenarios-dir", type=Path, default=DEFAULT_SCENARIOS)
+    p_warm.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
+
     args = parser.parse_args(argv)
     if args.cmd == "approve" and args.override_verdict and not args.reason:
         parser.error("--override-verdict에는 --reason이 필요하다")
@@ -162,10 +194,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "run":
             engine = get_engine(args.engine)
-            settings = yaml.safe_load((args.settings / "workflow.yaml").read_text(encoding="utf-8"))
+            settings = _settings(args.settings)
+            sets = for_engine(settings, engine.name)["scenarios"]
+            train = args.train or DEFAULT_SCENARIOS / f"{sets['train']}.yaml"
+            holdout = args.holdout or DEFAULT_SCENARIOS / f"{sets['holdout']}.yaml"
             llm, config = _llm(args.rehearsal, args.settings, args.runs_dir)
             run = runner.run_workflow(engine, models_dir=args.models_dir, runs_dir=args.runs_dir,
-                                      train_path=args.train, holdout_path=args.holdout, llm=llm, llm_config=config,
+                                      train_path=train, holdout_path=holdout, llm=llm, llm_config=config,
                                       settings=settings, rehearsal=args.rehearsal)
             print_status(store, run["run_id"])
             return 0 if run["status"] == "awaiting_approval" else 1
@@ -178,6 +213,35 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "models":
             print_models(Registry(args.models_dir, args.engine))
+            return 0
+        if args.cmd == "compare-engines":
+            names = [n for n in args.engines.split(",") if n]
+            engines = [get_engine(n) for n in names]
+            set_name = args.set or for_engine(_settings(args.settings), names[-1])["scenarios"]["holdout"]
+            result = compare_engines(engines, models_dir=args.models_dir,
+                                     set_path=args.scenarios_dir / f"{set_name}.yaml",
+                                     progress=lambda d, t, msg: print(f"  {d}/{t} {msg}", file=sys.stderr))
+            cid = save_comparison(args.runs_dir, result)
+            print_comparison(result)
+            print(f"\n저장: {args.runs_dir / 'comparisons' / (cid + '.json')}")
+            return 0
+        if args.cmd == "warm":
+            engine = get_engine(args.engine)
+            names = args.sets
+            if not names:
+                defaults = for_engine(_settings(args.settings), engine.name)["scenarios"]
+                names = [defaults["train"], defaults["holdout"]]
+            try:
+                result = warm(engine, models_dir=args.models_dir,
+                              set_paths=[args.scenarios_dir / f"{n}.yaml" for n in names],
+                              progress=lambda d, t, msg: print(f"  {d}/{t} {msg}", file=sys.stderr))
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"오류: {exc}", file=sys.stderr)
+                return 2
+            print(f"{result['model']} 결과를 미리 풀었다 ({result['seconds']:.1f}초)")
+            for s in result["sets"]:
+                print(f"  {s['name']}: {len(s['cases'])}건  " + ", ".join(f"seed {c['seed']} {c['seconds']:.1f}초"
+                                                                       for c in s["cases"]))
             return 0
         if args.cmd == "rollback":
             before, after = runner.rollback(models_dir=args.models_dir, engine=args.engine, reason=args.reason,

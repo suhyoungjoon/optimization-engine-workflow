@@ -15,6 +15,7 @@ from engines.base import Engine
 
 from .compare import check_deadline, compare_cases
 from .judge import judge
+from .scenarios import make_instance
 
 # 3단계 개선안 상태: 검증 대상은 valid뿐이다
 VALID, INVALID, UNSUPPORTED = "valid", "invalid", "unsupported"
@@ -35,7 +36,7 @@ def run_stage(engine: Engine, params: dict, cases: list[dict], progress=_no_prog
         raise ValueError("params 파일이 허용 범위 검사를 통과하지 못함: " + "; ".join(errors))
     rows, representative = [], None
     for case in cases:
-        instance, _truth = pack.generate(case["seed"], case["faults"])   # 정답표는 분석·제안에 넘기지 않는다
+        instance = make_instance(pack, case)   # 정답표는 분석·제안에 넘기지 않는다
         decisions = pack.solve(instance, params)
         violations = pack.validate(instance, decisions)
         rows.append({
@@ -104,7 +105,7 @@ def validation_stage(engine: Engine, params: dict, proposals: list[dict], report
         instances[name] = []
         for c in s["cases"]:
             check_deadline(deadline)
-            instances[name].append((c, pack.generate(c["seed"], c["faults"])[0]))
+            instances[name].append((c, make_instance(pack, c)))
             done += 1
             progress("validation", done, total, f"시나리오 생성 seed {c['seed']}")
     slices = finding_slices(report)

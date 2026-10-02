@@ -1,0 +1,5 @@
+# 시연용 검증용 세트: 학습용과 같은 결함 조합 1건, 학습용에 없는 조합(P4 없음) 1건. 각 300건.
+name: demo_holdout
+cases:
+  - {seed: 101, faults: [P1, P2, P3, P4], items: 300}
+  - {seed: 106, faults: [P1, P2, P3], items: 300}

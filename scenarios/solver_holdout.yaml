@@ -1,0 +1,9 @@
+# solver 검증용 세트: 규칙 엔진 검증용 세트(10건)의 결함 조합 비율(P1~P4 절반, 학습용에 없는 조합 절반)을 유지한 6건.
+name: solver_holdout
+cases:
+  - {seed: 101, faults: [P1, P2, P3, P4]}
+  - {seed: 102, faults: [P1, P2, P3, P4]}
+  - {seed: 103, faults: [P1, P2, P3, P4]}
+  - {seed: 106, faults: [P1, P2, P3]}
+  - {seed: 107, faults: [P1, P2, P3]}
+  - {seed: 109, faults: []}

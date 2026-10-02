@@ -8,7 +8,7 @@
 
 1. **AI는 제안하고, 코드는 검증하고, 사람은 결정한다.** LLM은 분석과 개선안 도출에만 쓴다. 단계 순서, 허용 범위 검사, 시뮬레이션, 비교 판정은 코드가 한다.
 2. **개선적용 앞에서는 반드시 멈춘다.** 승인 대기 상태로 저장하고, 사람이 승인 명령을 내려야 새 버전이 챔피언이 된다. 자동 승인 금지.
-3. **필수조건 판정은 항상 도메인 팩의 `validate()`로 한다.** 엔진(규칙·솔버·학습형)이 제약을 자체적으로 지키더라도 결과는 `validate()`로 독립 검증한다.
+3. **필수조건 판정은 항상 도메인 팩의 `validate()`로 한다.** 엔진(규칙·solver·학습형)이 제약을 자체적으로 지키더라도 결과는 `validate()`로 독립 검증한다.
 4. **엔진은 교체 가능해야 한다.** 워크플로우 코드는 특정 엔진을 몰라야 한다. 엔진은 `DomainPack.solve` 계약(handoff 5장)을 따르는 어댑터로만 붙인다.
 5. **모든 실행은 재현 가능해야 한다.** 워크플로우 실행 ID마다 엔진 이름, 모델 버전, 시나리오 세트(seed·결함), LLM 모델명, 단계별 결과를 저장한다.
 6. **현재 마일스톤에 필요한 것만 만든다.** 다음 마일스톤 기능을 미리 만들지 않는다.
@@ -27,10 +27,10 @@
 
 ```
 workflow/        워크플로우 상태 머신, 단계(stage) 구현, CLI, 워크플로우 정의(pipeline.yaml: 화면 다이어그램의 기준)
-engines/         엔진 어댑터 (rule: 코어 규칙 엔진 래핑, solver: M4 이후)
+engines/         엔진 어댑터 (rule: 코어 규칙 엔진 래핑, solver: OR-Tools CP-SAT. 코어 팩에서 solve만 바꾼다)
 modelreg/        모델 레지스트리: 버전별 params 스냅샷, 모델 카드, 챔피언 지정, 되돌리기
-scenarios/       시나리오 세트 정의 (학습용·검증용 seed·결함 조합)
-settings/        workflow.yaml(상한·판정 기준), llm.yaml
+scenarios/       시나리오 세트 정의 (학습용·검증용 seed·결함 조합, …train ↔ …holdout 짝. 엔진별 기본 세트는 settings)
+settings/        workflow.yaml(상한·판정 기준·기본 세트, engines.<엔진>으로 엔진별 예외), llm.yaml
 models/          레지스트리 데이터 (엔진별 버전 디렉터리)
 ui/              워크플로우 화면 (M3): FastAPI(app.py) + 빌드 없는 단일 페이지(static/)
 tests/           pytest (fake_llm.py는 코어 레포 tests/에서 복사)
@@ -58,7 +58,9 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 - API 키는 `.env`. `.env`, `runs/`는 커밋하지 않는다.
 - LLM 경로는 가짜 LLM(`tests/fake_llm.py`) 테스트를 먼저 만든다. 실제 API 실행은 사람이 요청할 때만.
 - 결정적인 부분(시나리오 생성, 비교 판정, 레지스트리)은 테스트를 먼저 작성한다.
-- 반복·비용 상한은 `settings/workflow.yaml`에서 읽는다 (개선 루프 횟수, 단계별 LLM 호출 수).
+- 반복·비용 상한은 `settings/workflow.yaml`에서 읽는다 (개선 루프 횟수, 단계별 LLM 호출 수). 엔진마다 다른 값은 `engines.<엔진>`에 두고, 워크플로우 코드에 엔진 이름을 쓰지 않는다.
+- solver는 결정성을 지킨다: 단일 스레드·고정 seed·결정적 시간 한도(`objective.time_limit`). 문제끼리는 독립이라 병렬로 풀어도 결과가 같다(`SOLVER_THREADS`로 스레드 수 조정).
+  결정적이라 풀이 결과를 `runs/solver_cache/`에 저장해 다시 쓴다(키: 인스턴스·params·`engines/solver/model.py`·OR-Tools 버전, `SOLVER_CACHE_DIR=`로 끔, `warm`으로 미리 채움). 새 개선안의 풀이는 매번 새로 계산한다. 시연용 세트(`demo_*`)는 케이스마다 `items`로 앞 N건만 쓴다.
 - 커밋 메시지: `[M1] workflow: add run stage` 형식.
 
 ## 명령어
@@ -66,13 +68,17 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 ```bash
 pip install -e ".[dev]"      # 코어 포함 설치 (pyproject.toml에 코어를 커밋 1343534로 고정)
 pytest
-python -m workflow run --engine rule --rehearsal                   # 가짜 LLM으로 한 바퀴 (scenarios/train·holdout), 승인 대기에서 정지
+python -m workflow run --engine rule --rehearsal                   # 가짜 LLM으로 한 바퀴 (엔진별 기본 세트), 승인 대기에서 정지
+python -m workflow run --engine solver --rehearsal                 # solver로 한 바퀴 (solver_train·solver_holdout, 약 10분)
+python -m workflow run --engine solver --rehearsal --train scenarios/demo_train.yaml --holdout scenarios/demo_holdout.yaml   # 시연용 (처음 약 40초, 반복하면 몇 초)
 python -m workflow status [<run_id>]                               # 실행 목록 / 단계별 결과·판정
 python -m workflow approve <run_id> [--proposal N] [--note ...]    # 사람 승인 (판정 통과 안이 하나면 --proposal 생략)
 python -m workflow approve <run_id> --proposal N --override-verdict --reason ...   # 판정 불통과 안을 사유와 함께 승인 (위반 안은 불가)
 python -m workflow reject <run_id> --reason ...                    # 사람 반려 (기록만)
 python -m workflow models [--engine rule]                          # 모델 버전·챔피언 이력
 python -m workflow rollback [--engine rule] [--to N] --reason ...  # 챔피언 되돌리기 (기본: 부모 버전)
+python -m workflow compare-engines [--engines rule,solver] [--set solver_holdout]   # 엔진별 챔피언 비교 (정보용, 기본 세트: 마지막 엔진의 검증용)
+python -m workflow warm --engine solver [--set demo_train --set demo_holdout]       # 챔피언 풀이를 미리 캐시에 채움 (기본: 엔진별 기본 세트)
 python -m ui                                                       # 워크플로우 화면 http://127.0.0.1:8765 (리허설 실행만 허용)
 ```
 레포 루트에서 실행한다 (`--rehearsal`이 `tests/fake_llm.py`를 쓴다). 공통 옵션 `--runs-dir`, `--models-dir`, run 옵션 `--train`, `--holdout`, `--settings`로 경로를 바꾼다.

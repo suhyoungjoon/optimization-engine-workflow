@@ -1,0 +1,8 @@
+{
+ "version": 1,
+ "engine": "solver",
+ "parent": null,
+ "created_at": "2026-10-01T08:28:53+00:00",
+ "source": "models/rule/v1/params.yaml + objective",
+ "note": "규칙 엔진 v1 섹션 + objective (M4)"
+}

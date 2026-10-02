@@ -11,6 +11,7 @@ import yaml
 
 from engines import get_engine
 from modelreg import Registry
+from tests.conftest import SETTINGS as SETTINGS_FOR_TEST
 from tests.conftest import write_set
 from tests.fake_llm import FakeLLM, tool_use
 from workflow import runner
@@ -227,3 +228,21 @@ def test_progress_writes_stage_changes_even_within_the_throttle(ws, tmp_path):
     write("run", 5, 5, "끝")
     write("analysis", 0, 1, "분석 agent 실행 중")   # 바로 뒤의 단계 전환도 남는다
     assert store.load(run_id)["progress"]["stage"] == "analysis"
+
+
+def test_engine_overrides_apply_on_top_of_defaults():
+    from workflow.config import for_engine, settings_errors
+    s = {"llm": {"analyze_max_calls": 30, "propose_max_calls": 20}, "validation": {"max_seconds": 300},
+         "judgment": SETTINGS_FOR_TEST["judgment"], "scenarios": {"train": "train", "holdout": "holdout"},
+         "engines": {"solver": {"validation": {"max_seconds": 1200}, "scenarios": {"train": "solver_train", "holdout": "solver_holdout"}}}}
+    assert for_engine(s, "solver")["validation"] == {"max_seconds": 1200}
+    assert for_engine(s, "solver")["llm"]["propose_max_calls"] == 20 and "engines" not in for_engine(s, "solver")
+    assert for_engine(s, "rule")["scenarios"]["train"] == "train"
+    assert settings_errors(s) == []
+    bad = {**s, "engines": {"solver": {"validation": {"max_seconds": 0}}}}
+    assert any(e.startswith("engines.solver:") for e in settings_errors(bad))
+    assert settings_errors({**s, "engines": {"solver": 5}})
+
+
+def test_run_records_effective_limits(ws, awaiting):
+    assert awaiting["limits"] == {"llm": SETTINGS_FOR_TEST["llm"], "validation": SETTINGS_FOR_TEST["validation"]}

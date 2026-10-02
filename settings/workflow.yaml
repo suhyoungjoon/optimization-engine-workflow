@@ -14,3 +14,15 @@ judgment:
   guards:                                                     # 부작용 한도 (세트 평균 Δ 기준)
     desired_time_match_rate: {max_drop: 0.05}                 # 희망시간 일치율 하락 폭
     avg_travel_min: {max_increase: 2.0}                       # 평균 이동시간 증가 폭 (분)
+
+scenarios:                     # 기본 시나리오 세트 (scenarios/<이름>.yaml). run의 --train/--holdout과 화면이 쓴다
+  train: train
+  holdout: holdout
+
+# 엔진별 예외: 위 기본값에 덮어쓴다 (워크플로우 코드는 엔진 이름을 모르고 이 설정만 읽는다)
+engines:
+  solver:                      # 1회 풀이가 15초 안팎(규칙 엔진은 0.1초)이라 예산을 늘리고 세트를 줄인다
+    validation: {max_seconds: 1200}
+    llm: {propose_max_calls: 5}   # 개선 agent의 시험 시뮬레이션 1회가 solver 2회 풀이
+    scenarios: {train: solver_train, holdout: solver_holdout}
+
