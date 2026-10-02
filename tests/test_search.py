@@ -155,3 +155,13 @@ def test_refinement_widens_again_instead_of_stopping_early(setup):
                      params, [{"path": TW, "low": 60, "high": 100}, {"path": AREA, "low": 2, "high": 5}],
                      {"target": JUDGMENT["target"]}, SEARCH_DEFAULTS)
     assert out["stop"] == "max_evals" and len(out["evals"]) == 40
+
+
+def test_rounded_points_stay_inside_the_range(setup):
+    params = {**setup[0], "travel": {**setup[0]["travel"], "avg_speed_kmh": 30.0}}
+    space = [{"path": "travel.avg_speed_kmh", "low": 20.00004, "high": 40.00006}]
+    pts = sample_points(params, space, 30, seed=0)
+    out = run_search(lambda p: {"metrics": {"assignment_rate": {"delta_mean": p["travel.avg_speed_kmh"]}}, "violations": 0},
+                     params, space, {"target": JUDGMENT["target"]}, {**SEARCH_DEFAULTS, "max_evals": 30})
+    values = [p["travel.avg_speed_kmh"] for p in pts] + [e["point"]["travel.avg_speed_kmh"] for e in out["evals"]]
+    assert all(20.00004 <= v <= 40.00006 for v in values)

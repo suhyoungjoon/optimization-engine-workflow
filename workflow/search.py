@@ -114,7 +114,7 @@ def _points(params: dict, space: list[dict], seed: int, center=None, width: floa
             else:
                 half = (hi - lo) * width
                 v = min(hi, max(lo, center[d["path"]] + (2 * u - 1) * half))
-            point[d["path"]] = casts[j](v)
+            point[d["path"]] = min(hi, max(lo, casts[j](v)))   # 반올림이 범위 끝을 넘지 않게
         yield point
         k += 1
 
