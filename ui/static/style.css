@@ -192,7 +192,7 @@ tbody tr.clickable:hover { background: var(--surface-2); }
 /* --- 파이프라인 --- */
 .run-header { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 18px; }
 .run-header .meta { display: flex; gap: 14px; flex-wrap: wrap; color: var(--ink-2); font-size: 13px; margin-top: 6px; }
-.pipeline { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; margin-bottom: 18px; }
+.pipeline { display: grid; grid-template-columns: repeat(var(--n, 6), minmax(0, 1fr)); gap: 0; margin-bottom: 18px; }
 .stage {
   position: relative; text-align: left; font: inherit; color: inherit; cursor: pointer;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);

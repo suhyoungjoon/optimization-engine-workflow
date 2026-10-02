@@ -1,10 +1,10 @@
 // 워크플로우 화면. 빌드 없는 단일 페이지: 해시 라우팅 + 폴링. 모든 텍스트는 textContent로 넣는다 (LLM 출력 포함).
 
 const app = document.getElementById("app");
-const STAGE_KEYS = ["run", "analysis", "proposals", "validation", "apply"];
+const STAGE_KEYS = ["run", "analysis", "proposals", "search", "validation", "apply"];
 const ACTOR_LABEL = { ai: "AI + 코드", code: "코드", human: "사람 + 코드" };
 const STATUS = {
-  running: ["실행 중", "info"], analyzed: ["분석 완료", "info"], proposed: ["제안 완료", "info"],
+  running: ["실행 중", "info"], analyzed: ["분석 완료", "info"], proposed: ["제안 완료", "info"], searched: ["탐색 완료", "info"],
   validated: ["검증 완료", "info"], awaiting_approval: ["승인 대기", "human"], applied: ["적용됨", "good"],
   rejected: ["반려됨", "outline"], failed: ["실패", "bad"],
 };
@@ -122,20 +122,21 @@ function failedStage(run) {
   const reason = run.history.at(-1)?.reason || "";
   if (reason.startsWith("결과분석")) return "analysis";
   if (reason.startsWith("개선안 도출")) return "proposals";
+  if (reason.startsWith("파라미터 탐색")) return "search";
   if (reason.startsWith("검증")) return "validation";
   return run.progress?.stage || "run";
 }
 
 function stageStates(run, stages = null) {
   const st = Object.fromEntries(STAGE_KEYS.map((k) => [k, "pending"]));
-  const reached = { running: 0, analyzed: 2, proposed: 3, validated: 4, awaiting_approval: 4, applied: 5, rejected: 5 };
+  const reached = { running: 0, analyzed: 2, proposed: 3, searched: 4, validated: 5, awaiting_approval: 5, applied: 6, rejected: 6 };
   const doneCount = run.status === "failed" ? STAGE_KEYS.indexOf(failedStage(run)) : reached[run.status] ?? 0;
   STAGE_KEYS.slice(0, doneCount).forEach((k) => (st[k] = "done"));
   if (run.status === "running" && stages?.run) st.run = "done";
-  if (["running", "analyzed", "proposed"].includes(run.status)) {
+  if (["running", "analyzed", "proposed", "searched"].includes(run.status)) {
     const cur = run.progress?.stage;
     const idx = Math.max(doneCount, STAGE_KEYS.indexOf(cur));
-    if (idx >= 0 && idx < 4) st[STAGE_KEYS[idx]] = "active";
+    if (idx >= 0 && idx < STAGE_KEYS.length - 1) st[STAGE_KEYS[idx]] = "active";
     STAGE_KEYS.slice(0, idx).forEach((k) => (st[k] = "done"));
   }
   if (run.status === "failed") st[failedStage(run)] = "failed";
@@ -203,7 +204,7 @@ async function runsPage() {
         h("label", { class: "field" }, `${SET_LABEL[k]} 세트`, pick[k]), infoBox[k]))),
       h("div", { class: "row", style: "margin-top:14px" },
         h("span", { class: "small muted" }, `엔진 ${engine} · 현재 챔피언으로 실행 · 엔진별 기본 시나리오 세트와 예산은 기준정보에서 바꾼다`,
-          engine === "solver" ? " · solver는 10일치 1회 풀이가 15초 안팎이다. 시연은 demo 세트(앞 300건)로 1분 안팎, 같은 시연을 반복하면 저장된 풀이 결과를 다시 써서 몇 초" : ""),
+          engine === "solver" ? " · solver는 10일치 1회 풀이가 15초 안팎이다. 시연은 demo 세트(앞 300건)로 처음 2분 안팎(탐색 포함), 같은 시연을 반복하면 저장된 풀이 결과를 다시 써서 몇 초" : ""),
         h("span", { class: "spacer" }), startBtn)),
     h("div", { class: "card" },
       rows.length
@@ -211,7 +212,7 @@ async function runsPage() {
             h("thead", {}, h("tr", {}, ["상태", "단계", "실행 ID", "모델", "마지막 기록", "시작"].map((t) => h("th", {}, t)))),
             h("tbody", {}, rows)))
         : h("div", { class: "empty" }, "아직 실행이 없다. 위에서 리허설 실행을 시작한다.")));
-  if (list.busy || list.runs.some((r) => ["running", "analyzed", "proposed", "validated"].includes(r.status))) {
+  if (list.busy || list.runs.some((r) => ["running", "analyzed", "proposed", "searched", "validated"].includes(r.status))) {
     pollTimer = setInterval(() => { if (location.hash.replace(/^#\/?/, "") === "runs" || !location.hash) runsPage(); }, 1500);
   }
 }
@@ -230,7 +231,7 @@ async function runPage(runId, stageKey) {
   const pipeline = view === "diagram"
     ? h("div", { class: "card diagram-wrap", style: "margin-bottom:18px" }, pipelineDiagram(await pipelineDef(), {
         states, selected, progress: run.progress, onSelect: (k, kind) => kind === "stage" && (location.hash = `#/runs/${run.run_id}/${k}`) }))
-    : h("div", { class: "pipeline" }, META.stages.map((m, i) => stageNode(m, i, states[m.key], run, stages, m.key === selected)));
+    : h("div", { class: "pipeline", style: `--n: ${META.stages.length}` }, META.stages.map((m, i) => stageNode(m, i, states[m.key], run, stages, m.key === selected)));
   const toggle = h("div", { class: "segmented", role: "group", "aria-label": "보기" },
     [["cards", "단계 카드"], ["diagram", "다이어그램"]].map(([v, t]) => h("button", { class: view === v ? "on" : "", "aria-pressed": String(view === v),
       onclick: () => { pipelineView(v); runPage(runId, stageKey); } }, t)));
@@ -285,6 +286,10 @@ function stageSummary(key, run, stages) {
     const n = (s) => st.proposals.filter((p) => p.state === s).length;
     return `개선안 ${st.proposals.length}개 · 검증 대상 ${n("valid")}${n("invalid") ? ` · 범위 밖 ${n("invalid")}` : ""}`;
   }
+  if (key === "search") {
+    if (st) return `조합 ${st.evals.length}개 · 후보 ${st.candidates.length}개`;
+    if (stages.validation) return "이 실행에는 탐색 단계가 없다";
+  }
   if (key === "validation" && st) {
     const pass = st.results.filter((r) => r.verdict.pass).length;
     return `판정 통과 ${pass} · 불통과 ${st.results.length - pass}`;
@@ -319,7 +324,7 @@ function stageNode(meta, i, state, run, stages, selected) {
 
 function stagePanel(key, detail, states) {
   const meta = META.stages.find((m) => m.key === key);
-  const body = { run: runStageView, analysis: analysisView, proposals: proposalsView, validation: validationView, apply: applyView }[key](detail, states);
+  const body = { run: runStageView, analysis: analysisView, proposals: proposalsView, search: searchView, validation: validationView, apply: applyView }[key](detail, states);
   return h("section", { class: "card stage-panel", style: `--c: var(--actor-${meta.actor})` },
     h("div", { class: "panel-head" },
       h("h2", {}, `${STAGE_KEYS.indexOf(key) + 1}. ${meta.label}`), actorChip(meta.actor),
@@ -422,7 +427,13 @@ function stateBadge(p) {
   const [label, cls] = map[p.state] || [p.state, "outline"];
   return h("span", { class: `badge ${cls}` }, label);
 }
-const originBadge = (p) => (p.origin ? h("span", { class: "badge human", title: p.origin.note || "" }, `사람 수정 ← 안 ${p.origin.revised_from}`) : null);
+const originBadge = (p) => originChip(p.origin);
+function originChip(origin) {
+  if (!origin) return null;
+  if (origin.by === "search") return h("span", { class: "badge ai", title: `탐색 조합 #${origin.eval}` }, `탐색 ${origin.rank}위`);
+  return h("span", { class: "badge human", title: origin.note || "" }, `사람 수정 ← 안 ${origin.revised_from}`);
+}
+const allCandidates = (stages) => [...(stages.proposals?.proposals || []), ...(stages.search?.candidates || [])];
 
 function proposalsView({ stages }) {
   const st = stages.proposals;
@@ -443,7 +454,93 @@ function proposalsView({ stages }) {
     h("div", { class: "small muted" }, `시험 시뮬레이션 ${st.trials}회 · LLM 호출 ${st.usage.llm_calls}회 · 종료 ${st.stop}`));
 }
 
-// 4. 검증(비교)
+// 4. 파라미터 탐색
+const STOP_LABEL = { max_evals: "평가 수 상한", max_seconds: "시간 예산", exhausted: "범위를 다 봄", no_space: "탐색 범위 없음" };
+
+function searchView({ run, stages }) {
+  const st = stages.search;
+  if (!st) return notYet(stages.validation ? "이 실행은 탐색 단계가 생기기 전(M5 이전)에 만들어졌다." : "탐색 agent가 아직 범위를 내지 않았다.");
+  const params = stages.run?.params || {};
+  const target = st.judgment?.target.metric || stages.validation?.judgment.target.metric;
+  const space = st.space || [];
+  const chosen = new Map(st.candidates.map((c) => [c.origin.eval, c]));
+  return h("div", { class: "stack" },
+    h("div", { class: "note-box" }, `AI가 바꿔 볼 파라미터와 범위를 냈고, 코드가 범위 안의 조합을 학습용 ${st.cases.length}건에서 직접 풀어 판정 규칙으로 점수를 매겼다. `,
+      `부작용 한도는 ${Math.round((st.settings.guard_margin ?? 1) * 100)}%까지만 썼다 (검증용에서 한도를 넘지 않게 여유를 둠). 검증용 세트는 탐색에 쓰지 않았다.`),
+    st.rationale ? h("div", { class: "ink-2" }, h("b", {}, "AI의 이유 "), st.rationale) : null,
+    space.length ? h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "탐색 범위"), h("th", { class: "num" }, "챔피언"), h("th", { class: "num" }, "최소"), h("th", { class: "num" }, "최대"), h("th", {}, "이유"))),
+      h("tbody", {}, space.map((d) => h("tr", {}, h("td", { class: "mono" }, d.path), h("td", { class: "num muted" }, fmtJSON(getPath(params, d.path))),
+        h("td", { class: "num" }, fmtJSON(d.low)), h("td", { class: "num" }, fmtJSON(d.high)), h("td", { class: "small ink-2" }, d.reason || "")))))) : null,
+    st.space_errors.length ? h("div", { class: "error-box" }, "범위 검사 실패: " + st.space_errors.join("; ")) : null,
+    st.evals.length ? h("div", { class: "charts" }, space.map((d) => searchScatter(st, d, params, target, chosen))) : null,
+    st.candidates.length
+      ? st.candidates.map((c) => h("div", { class: "proposal" },
+          h("div", { class: "proposal-head" }, h("span", { class: "pid" }, `안 ${c.id}`), h("b", {}, c.proposal.title), stateBadge(c), originChip(c.origin)),
+          h("div", { class: "ink-2" }, c.proposal.rationale), changeRows(c.proposal, params)))
+      : h("div", { class: "empty" }, st.stop === "no_space" ? "탐색 범위를 받지 못해 후보가 없다." : "학습용 판정을 통과한 조합이 없어 후보가 없다."),
+    st.evals.length ? searchTable(st, target, chosen) : null,
+    h("div", { class: "small muted" }, `조합 ${st.evals.length}개 평가 (상한 ${st.settings.max_evals}) · 멈춘 이유: ${STOP_LABEL[st.stop] || st.stop} · LLM 호출 ${st.agent.usage.llm_calls}회 · seed ${st.settings.seed}`));
+}
+
+// 탐색 점 그래프: 가로 = 한 파라미터의 값, 세로 = 학습용 목표 지표 평균 Δ. 통과는 채운 원, 불통과는 빈 원, 후보는 순위 표시.
+function searchScatter(st, dim, params, target, chosen) {
+  const W = 520, H = 220, L = 52, R = 12, T = 18, B = 40;
+  const pts = st.evals.filter((e) => e.target != null);
+  const ys = [0, ...pts.map((e) => e.target)];
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  const pad = (hi - lo || 0.01) * 0.15;
+  lo -= pad * 2; hi += pad;   // 아래쪽은 후보 라벨 자리
+  const x = (v) => L + ((v - dim.low) / (dim.high - dim.low || 1)) * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const champ = getPath(params, dim.path);
+  const tip = document.querySelector(".tooltip") || document.body.appendChild(h("div", { class: "tooltip", hidden: true }));
+  const show = (e, text) => { tip.hidden = false; tip.textContent = text; tip.style.left = `${e.clientX + 12}px`; tip.style.top = `${e.clientY + 12}px`; };
+  const hide = () => (tip.hidden = true);
+  const ticks = [Math.min(...ys), 0, Math.max(...ys)].filter((v, i, a) => a.findIndex((w) => Math.abs(w - v) < 1e-9) === i);
+  const graph = s("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img",
+    "aria-label": `${dim.path} 값에 따른 ${metricLabel(target)} Δ, 조합 ${pts.length}개` },
+    ticks.map((v) => [s("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: v === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": v === 0 ? 1.5 : 1 }),
+      s("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)" }, fmtDelta(target, v))]),
+    [dim.low, dim.high].map((v, i) => s("text", { x: x(v), y: H - B + 16, "text-anchor": i ? "end" : "start", "font-size": 11, fill: "var(--muted)" }, fmtJSON(v))),
+    s("text", { x: (L + W - R) / 2, y: H - 8, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": "var(--mono, monospace)" }, dim.path),
+    champ >= dim.low && champ <= dim.high ? [s("line", { x1: x(champ), x2: x(champ), y1: T, y2: H - B, stroke: "var(--ink-2)", "stroke-width": 1, "stroke-dasharray": "3 3" }),
+      s("text", { x: x(champ) + 4, y: T - 4, "font-size": 11, fill: "var(--ink-2)" }, `챔피언 ${fmtJSON(champ)}`)] : null,
+    pts.map((e) => {
+      const c = chosen.get(e.i);
+      const others = Object.entries(e.point).filter(([k]) => k !== dim.path).map(([k, v]) => `${k}=${fmtJSON(v)}`).join(", ");
+      const text = `조합 #${e.i}: ${dim.path}=${fmtJSON(e.point[dim.path])}${others ? `, ${others}` : ""}\n${metricLabel(target)} Δ ${fmtDelta(target, e.target)} · 학습용 판정 ${e.pass ? "통과" : "불통과"}${c ? ` · 후보 안 ${c.id}` : ""}`;
+      const cx = x(e.point[dim.path]), cy = y(e.target);
+      return s("g", { onmousemove: (ev) => show(ev, text), onmouseleave: hide },
+        s("circle", { cx, cy, r: 11, fill: "transparent" }),
+        c ? s("circle", { cx, cy, r: 8, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5 }) : null,
+        s("circle", { cx, cy, r: 4.5, fill: e.pass ? "var(--series-1)" : "var(--surface)", stroke: e.pass ? "var(--surface)" : "var(--muted)", "stroke-width": e.pass ? 1.5 : 2 }),
+        c ? s("text", { x: cx, y: cy + 22 + (c.origin.rank - 1) * 13, "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: "var(--ink)" }, `안 ${c.id}`) : null);
+    }));
+  return h("div", { class: "chart-card" },
+    h("div", { class: "row" }, h("h4", {}, `${metricLabel(target)} Δ (학습용 평균)`), h("span", { class: "spacer" }),
+      h("span", { class: "series-legend" },
+        h("span", {}, h("span", { class: "sw", style: "background:var(--series-1); border-radius:50%" }), "판정 통과"),
+        h("span", {}, h("span", { class: "sw", style: "background:var(--surface); border-radius:50%; box-shadow: inset 0 0 0 2px var(--muted)" }), "불통과"),
+        h("span", {}, h("span", { class: "sw", style: "background:transparent; border-radius:50%; box-shadow: inset 0 0 0 1.5px var(--ink)" }), "후보"))),
+    graph);
+}
+
+function searchTable(st, target, chosen) {
+  const paths = (st.space || []).map((d) => d.path);
+  const guards = st.evals[0].checks.filter((c) => c.name.startsWith("guard:")).map((c) => c.name.slice(6));
+  return h("details", {}, h("summary", {}, `평가한 조합 ${st.evals.length}개 (표)`),
+    h("div", { class: "table-wrap" }, h("table", { style: "margin-top:6px" },
+      h("thead", {}, h("tr", {}, h("th", { class: "num" }, "#"), paths.map((p) => h("th", { class: "num mono" }, p)),
+        h("th", { class: "num" }, `${metricLabel(target)} Δ`), guards.map((m) => h("th", { class: "num" }, `${metricLabel(m)} Δ`)), h("th", {}, "학습용 판정"))),
+      h("tbody", {}, st.evals.map((e) => h("tr", {}, h("td", { class: "num muted" }, e.i), paths.map((p) => h("td", { class: "num" }, fmtJSON(e.point[p]))),
+        checkCell(e.checks.find((c) => c.name === "target"), target),
+        guards.map((m) => checkCell(e.checks.find((c) => c.name === `guard:${m}`), m)),
+        h("td", {}, e.pass ? h("span", { class: "badge good" }, "✓ 통과") : h("span", { class: "badge outline" }, "불통과"),
+          chosen.get(e.i) ? h("span", { class: "badge ai", style: "margin-left:4px" }, `후보 안 ${chosen.get(e.i).id}`) : null)))))));
+}
+
+// 5. 검증(비교)
 const readable = (text) => text.replace(/\b([a-z]+(?:_[a-z0-9]+)+)\b/g, (k) => metricLabel(k));
 
 function criteriaText(j) {
@@ -466,13 +563,13 @@ function verdictBlock(r, judgment, stages, editable, runId) {
   const metricOf = (name) => (name === "target" ? judgment.target.metric : name.startsWith("guard:") ? name.slice(6) : null);
   const judged = [judgment.target.metric, ...Object.keys(judgment.guards || {})];
   const allMetrics = Object.keys(r.train.summary.metrics);
-  const origin = r.origin || stages.proposals?.proposals.find((p) => p.id === r.id)?.origin;
+  const origin = r.origin || allCandidates(stages).find((p) => p.id === r.id)?.origin;
   const box = h("div", { class: `proposal ${r.verdict.pass ? "pass" : "fail"}` },
     h("div", { class: "proposal-head" },
       h("span", { class: "pid" }, `안 ${r.id}`), h("b", {}, r.title),
       h("span", { class: `badge ${r.verdict.pass ? "good" : "bad"}` }, r.verdict.pass ? "✓ 판정 통과" : "✕ 판정 불통과"),
       r.verdict.overfit ? h("span", { class: "badge warn", title: "학습용에서는 목표를 채웠지만 검증용에서는 효과가 사라졌다" }, "⚠ 과적합") : null,
-      origin ? h("span", { class: "badge human" }, `사람 수정 ← 안 ${origin.revised_from}`) : null,
+      originChip(origin),
       h("span", { class: "spacer" }),
       editable ? h("button", { class: "small", onclick: (e) => openEditor(e.currentTarget, r.id, stages, runId) }, "값 수정 후 재검증") : null),
     h("div", { class: "table-wrap" }, h("table", {},
@@ -498,10 +595,10 @@ function verdictBlock(r, judgment, stages, editable, runId) {
 
 function validationView({ run, stages }) {
   const st = stages.validation;
-  if (!st) return notYet("검증은 개선안 도출 뒤에 코드가 한다.");
+  if (!st) return notYet("검증은 개선안 도출·파라미터 탐색 뒤에 코드가 한다.");
   const editable = run.status === "awaiting_approval";
   return h("div", { class: "stack" },
-    h("div", { class: "note-box" }, "코드가 검증 대상 안마다 챔피언과 도전자를 학습용·검증용의 모든 케이스에서 같은 인스턴스로 비교하고, 판정 기준을 적용했다. 두 세트 모두 통과해야 판정 통과다."),
+    h("div", { class: "note-box" }, "코드가 검증 대상 안(개선 agent의 안과 탐색 후보)마다 챔피언과 도전자를 학습용·검증용의 모든 케이스에서 같은 인스턴스로 비교하고, 판정 기준을 적용했다. 두 세트 모두 통과해야 판정 통과다."),
     h("div", { class: "row small" }, h("span", { class: "muted" }, "판정 기준"), criteriaText(st.judgment).map((t) => h("span", { class: "chip" }, t)),
       h("a", { href: "#/settings", class: "small" }, "기준정보에서 바꾸기")),
     st.results.map((r) => verdictBlock(r, st.judgment, stages, editable, run.run_id)));
@@ -557,7 +654,7 @@ function stripPlot(r, metric, judgment) {
 function openEditor(button, proposalId, stages, runId) {
   const box = button.closest(".proposal");
   if (box.querySelector(".editor")) return;
-  const item = stages.proposals.proposals.find((p) => p.id === proposalId);
+  const item = allCandidates(stages).find((p) => p.id === proposalId);
   const base = item.proposal;
   const params = stages.run.params;
   const inputs = [];
@@ -592,7 +689,7 @@ function openEditor(button, proposalId, stages, runId) {
     err));
 }
 
-// 5. 개선적용
+// 6. 개선적용
 function applyView({ run, stages }) {
   const st = stages.apply;
   if (st?.decision === "approved") {
@@ -648,7 +745,7 @@ function applyView({ run, stages }) {
 
   const options = results.map((r) => h("label", { class: "proposal row", style: "cursor:pointer" },
     h("input", { type: "radio", name: "pick", checked: r.id === chosen, onchange: () => { chosen = r.id; renderOverride(); } }),
-    h("span", { class: "pid" }, `안 ${r.id}`), h("b", {}, r.title),
+    h("span", { class: "pid" }, `안 ${r.id}`), h("b", {}, r.title), originChip(r.origin || allCandidates(stages).find((p) => p.id === r.id)?.origin),
     h("span", { class: `badge ${r.verdict.pass ? "good" : "bad"}` }, r.verdict.pass ? "✓ 판정 통과" : "✕ 불통과"),
     r.verdict.overfit ? h("span", { class: "badge warn" }, "⚠ 과적합") : null,
     r.violations ? h("span", { class: "badge bad" }, `위반 ${r.violations}`) : null,
@@ -847,6 +944,10 @@ function limitsCard(values, setNames) {
   const a = h("input", { type: "number", min: 1, step: 1, value: values.llm.analyze_max_calls });
   const p = h("input", { type: "number", min: 1, step: 1, value: values.llm.propose_max_calls });
   const sec = h("input", { type: "number", min: 1, step: 1, value: values.validation.max_seconds });
+  const sc = h("input", { type: "number", min: 1, step: 1, value: values.llm.search_max_calls });
+  const num = (v, attrs = {}) => h("input", { type: "number", min: 1, step: 1, value: v, ...attrs });
+  const search = { max_evals: num(values.search.max_evals), max_seconds: num(values.search.max_seconds), top_k: num(values.search.top_k),
+    max_dims: num(values.search.max_dims, { max: 5 }), guard_margin: num(values.search.guard_margin, { min: 0.05, max: 1, step: 0.05 }) };
   const base = {};
   function setSel(kind, value, isBase, engine) {
     const sel = h("select", {}, isBase ? null : h("option", { value: "" }, "기본"),
@@ -860,9 +961,11 @@ function limitsCard(values, setNames) {
     const f = overrides[e] = {
       calls: h("input", { type: "number", min: 1, step: 1, value: o.llm?.propose_max_calls ?? "", placeholder: values.llm.propose_max_calls }),
       secs: h("input", { type: "number", min: 1, step: 1, value: o.validation?.max_seconds ?? "", placeholder: values.validation.max_seconds }),
+      evals: h("input", { type: "number", min: 1, step: 1, value: o.search?.max_evals ?? "", placeholder: values.search.max_evals }),
+      ssecs: h("input", { type: "number", min: 1, step: 1, value: o.search?.max_seconds ?? "", placeholder: values.search.max_seconds }),
       train: setSel("train", o.scenarios?.train, false), holdout: setSel("holdout", o.scenarios?.holdout, false),
     };
-    return h("tr", {}, h("td", { class: "mono" }, e), h("td", {}, f.calls), h("td", {}, f.secs), h("td", {}, f.train), h("td", {}, f.holdout));
+    return h("tr", {}, h("td", { class: "mono" }, e), h("td", {}, f.calls), h("td", {}, f.evals), h("td", {}, f.ssecs), h("td", {}, f.secs), h("td", {}, f.train), h("td", {}, f.holdout));
   });
   return h("section", { class: "card" },
     h("div", { class: "card-head" }, h("h2", {}, "실행 상한")),
@@ -870,11 +973,19 @@ function limitsCard(values, setNames) {
       h("label", { class: "field" }, h("span", {}, "결과분석 LLM 호출 상한 ", actorChip("ai")), a),
       h("label", { class: "field" }, h("span", {}, "개선안 도출 LLM 호출 상한 ", actorChip("ai")), p),
       h("label", { class: "field" }, h("span", {}, "검증 시간 예산(초) ", actorChip("code")), sec)),
+    h("div", { class: "section-title", style: "margin-top:16px" }, "파라미터 탐색"),
+    h("div", { class: "row", style: "gap:16px" },
+      h("label", { class: "field" }, h("span", {}, "범위 agent LLM 호출 상한 ", actorChip("ai")), sc),
+      h("label", { class: "field" }, "평가할 조합 수", search.max_evals),
+      h("label", { class: "field" }, "탐색 시간 예산(초)", search.max_seconds),
+      h("label", { class: "field" }, "검증으로 넘길 후보 수", search.top_k),
+      h("label", { class: "field" }, "한 번에 찾는 파라미터 수 (1~5)", search.max_dims),
+      h("label", { class: "field", title: "탐색 중에는 부작용 한도의 이 비율까지만 쓴다. 검증용에서 한도를 넘지 않게 여유를 둔다" }, "부작용 한도 사용 비율 (0~1)", search.guard_margin)),
     h("div", { class: "section-title", style: "margin-top:16px" }, "기본 시나리오 세트"),
     h("div", { class: "row", style: "gap:16px" }, ...["train", "holdout"].map((k) => h("label", { class: "field" }, SET_LABEL[k], setSel(k, values.scenarios[k], true)))),
     h("div", { class: "section-title", style: "margin-top:16px" }, "엔진별 예외 (비우면 기본값을 따른다)"),
     h("div", { class: "table-wrap" }, h("table", {},
-      h("thead", {}, h("tr", {}, h("th", {}, "엔진"), h("th", {}, "개선안 도출 LLM 호출"), h("th", {}, "검증 예산(초)"), h("th", {}, "학습용 세트"), h("th", {}, "검증용 세트"))),
+      h("thead", {}, h("tr", {}, h("th", {}, "엔진"), h("th", {}, "개선안 도출 LLM 호출"), h("th", {}, "탐색 조합 수"), h("th", {}, "탐색 예산(초)"), h("th", {}, "검증 예산(초)"), h("th", {}, "학습용 세트"), h("th", {}, "검증용 세트"))),
       h("tbody", {}, overrideRows))),
     saveRow(() => {
       const engines = {};
@@ -882,10 +993,12 @@ function limitsCard(values, setNames) {
         const o = {};
         if (f.calls.value) o.llm = { propose_max_calls: Number(f.calls.value) };
         if (f.secs.value) o.validation = { max_seconds: Number(f.secs.value) };
+        if (f.evals.value || f.ssecs.value) o.search = { ...(f.evals.value ? { max_evals: Number(f.evals.value) } : {}), ...(f.ssecs.value ? { max_seconds: Number(f.ssecs.value) } : {}) };
         if (f.train.value || f.holdout.value) o.scenarios = { train: f.train.value || values.scenarios.train, holdout: f.holdout.value || values.scenarios.holdout };
         if (Object.keys(o).length) engines[e] = o;
       }
-      return put("/api/settings", { llm: { analyze_max_calls: Number(a.value), propose_max_calls: Number(p.value) },
+      return put("/api/settings", { llm: { analyze_max_calls: Number(a.value), propose_max_calls: Number(p.value), search_max_calls: Number(sc.value) },
+                                    search: { ...values.search, ...Object.fromEntries(Object.entries(search).map(([k, el]) => [k, Number(el.value)])) },
                                     validation: { max_seconds: Number(sec.value) },
                                     scenarios: { train: base.train.value, holdout: base.holdout.value }, engines });
     }));
@@ -1154,7 +1267,7 @@ async function workflowPage(sel) {
   };
   app.replaceChildren(
     h("div", { class: "row", style: "margin-bottom:6px" }, h("h1", {}, "워크플로우")),
-    h("p", { class: "ink-2", style: "margin:0 0 16px" }, "실행 → 결과분석 → 개선안 도출 → 검증 → (승인 대기) → 개선적용. 노드를 누르면 하는 일, 입력·산출물, 읽는 설정, 코드 위치를 본다. 정의: workflow/pipeline.yaml"),
+    h("p", { class: "ink-2", style: "margin:0 0 16px" }, META.stages.slice(0, -1).map((m) => m.label).join(" → ") + ` → (승인 대기) → ${META.stages.at(-1).label}. 노드를 누르면 하는 일, 입력·산출물, 읽는 설정, 코드 위치를 본다. 정의: workflow/pipeline.yaml`),
     h("div", { class: "card" }, holder,
       h("div", { class: "row small ink-2", style: "margin-top:8px; gap:16px" },
         actorChip("ai"), actorChip("code"), actorChip("human"),
