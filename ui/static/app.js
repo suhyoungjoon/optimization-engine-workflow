@@ -157,13 +157,20 @@ async function runsPage() {
   pollTimer = null;
   const [list, scenarios] = await Promise.all([api("/api/runs"), api("/api/scenarios")]);
   const engine = enginePref();
-  const sets = META.engine_scenarios[engine];
+  const defaults = META.engine_scenarios[engine];
+  const infoBox = { train: h("div"), holdout: h("div") };
+  const pick = Object.fromEntries(["train", "holdout"].map((k) => {
+    const sel = h("select", { "aria-label": `${SET_LABEL[k]} 세트`, onchange: () => infoBox[k].replaceChildren(setInfo(sel.value)) },
+      setOrder(Object.keys(scenarios)).filter((n) => setKind(n) === k).map((n) =>
+        h("option", { value: n, selected: n === defaults[k] }, n === defaults[k] ? `${n} (기본)` : n)));
+    return [k, sel];
+  }));
   const startBtn = h("button", { class: "primary", disabled: list.busy, onclick: startRun },
     list.busy ? "다른 실행이 진행 중" : "리허설 실행 시작");
   async function startRun() {
     startBtn.disabled = true;
     try {
-      const { run_id } = await post("/api/runs", { engine });   // 시나리오 세트는 엔진별 기본값
+      const { run_id } = await post("/api/runs", { engine, train: pick.train.value, holdout: pick.holdout.value });
       location.hash = `#/runs/${run_id}`;
     } catch (e) { toast(e.message, true); startBtn.disabled = false; }
   }
@@ -172,10 +179,12 @@ async function runsPage() {
     if (!set) return h("div", { class: "error-box" }, `시나리오 세트 ${name}가 없다`);
     const combos = [...new Set(set.cases.map((c) => c.faults.join("+") || "결함 없음"))];
     return h("div", { class: "stack", style: "gap:4px" },
-      h("div", {}, h("b", {}, `${setTitle(name)} ${set.cases.length}건`), " ",
-        h("span", { class: "muted small" }, `seed ${set.cases.map((c) => c.seed).join(", ")}`)),
+      h("div", {}, h("b", {}, `${set.cases.length}건`), " ",
+        h("span", { class: "muted small" }, `seed ${set.cases.map((c) => c.seed + (c.items ? `(앞 ${c.items}건)` : "")).join(", ")}`)),
       h("div", { class: "chips" }, combos.map((c) => h("span", { class: "chip" }, c))));
   };
+  infoBox.train.append(setInfo(pick.train.value));
+  infoBox.holdout.append(setInfo(pick.holdout.value));
   const rows = list.runs.map((r) =>
     h("tr", { class: "clickable", onclick: () => (location.hash = `#/runs/${r.run_id}`) },
       h("td", {}, statusBadge(r.status)),
@@ -190,10 +199,11 @@ async function runsPage() {
     h("div", { class: "card", style: "margin-bottom:16px" },
       h("div", { class: "card-head" }, h("h2", {}, "새 실행"), engineTabs(engine, (e) => { enginePref(e); runsPage(); }),
         h("span", { class: "badge warn" }, "리허설만 허용 (가짜 LLM, API 비용 없음)")),
-      h("div", { class: "grid-2" }, setInfo(sets.train), setInfo(sets.holdout)),
+      h("div", { class: "grid-2" }, ["train", "holdout"].map((k) => h("div", { class: "stack", style: "gap:6px" },
+        h("label", { class: "field" }, `${SET_LABEL[k]} 세트`, pick[k]), infoBox[k]))),
       h("div", { class: "row", style: "margin-top:14px" },
         h("span", { class: "small muted" }, `엔진 ${engine} · 현재 챔피언으로 실행 · 엔진별 기본 시나리오 세트와 예산은 기준정보에서 바꾼다`,
-          engine === "solver" ? " · solver는 1회 풀이가 15초 안팎이라 실행이 수 분 걸린다" : ""),
+          engine === "solver" ? " · solver는 10일치 1회 풀이가 15초 안팎이다. 시연은 demo 세트(앞 300건)로 1분 안팎, 같은 시연을 반복하면 저장된 풀이 결과를 다시 써서 몇 초" : ""),
         h("span", { class: "spacer" }), startBtn)),
     h("div", { class: "card" },
       rows.length

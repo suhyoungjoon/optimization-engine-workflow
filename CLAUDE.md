@@ -60,6 +60,7 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 - 결정적인 부분(시나리오 생성, 비교 판정, 레지스트리)은 테스트를 먼저 작성한다.
 - 반복·비용 상한은 `settings/workflow.yaml`에서 읽는다 (개선 루프 횟수, 단계별 LLM 호출 수). 엔진마다 다른 값은 `engines.<엔진>`에 두고, 워크플로우 코드에 엔진 이름을 쓰지 않는다.
 - solver는 결정성을 지킨다: 단일 스레드·고정 seed·결정적 시간 한도(`objective.time_limit`). 문제끼리는 독립이라 병렬로 풀어도 결과가 같다(`SOLVER_THREADS`로 스레드 수 조정).
+  결정적이라 풀이 결과를 `runs/solver_cache/`에 저장해 다시 쓴다(키: 인스턴스·params·`engines/solver/model.py`·OR-Tools 버전, `SOLVER_CACHE_DIR=`로 끔). 시연용 세트(`demo_*`)는 케이스마다 `items`로 앞 N건만 쓴다.
 - 커밋 메시지: `[M1] workflow: add run stage` 형식.
 
 ## 명령어
@@ -68,7 +69,8 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 pip install -e ".[dev]"      # 코어 포함 설치 (pyproject.toml에 코어를 커밋 1343534로 고정)
 pytest
 python -m workflow run --engine rule --rehearsal                   # 가짜 LLM으로 한 바퀴 (엔진별 기본 세트), 승인 대기에서 정지
-python -m workflow run --engine solver --rehearsal                 # solver로 한 바퀴 (solver_train·solver_holdout, 수 분)
+python -m workflow run --engine solver --rehearsal                 # solver로 한 바퀴 (solver_train·solver_holdout, 약 10분)
+python -m workflow run --engine solver --rehearsal --train scenarios/demo_train.yaml --holdout scenarios/demo_holdout.yaml   # 시연용 (처음 약 40초, 반복하면 몇 초)
 python -m workflow status [<run_id>]                               # 실행 목록 / 단계별 결과·판정
 python -m workflow approve <run_id> [--proposal N] [--note ...]    # 사람 승인 (판정 통과 안이 하나면 --proposal 생략)
 python -m workflow approve <run_id> --proposal N --override-verdict --reason ...   # 판정 불통과 안을 사유와 함께 승인 (위반 안은 불가)
