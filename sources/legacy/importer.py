@@ -40,14 +40,17 @@ class _Reader:
         self.mapping, self.part, self.problems = mapping, part, problems
         self.columns = mapping[part]["columns"]
         self.codes = mapping[part].get("codes") or {}
-        with path.open(encoding=mapping["encoding"], newline="") as f:
-            reader = csv.DictReader(f)
-            header = reader.fieldnames or []
-            missing = [c for c in self.columns.values() if c not in header]
-            if missing:
-                raise ValueError(f"{path.name}에 컬럼 {', '.join(missing)}이 없다 (매핑 명세 {part}.columns 확인)")
-            self.ignored = [c for c in header if c not in self.columns.values()]
-            self.rows = [(i, row) for i, row in enumerate(reader, start=2)]   # 1행은 머리글
+        try:
+            with path.open(encoding=mapping["encoding"], newline="") as f:
+                reader = csv.DictReader(f)
+                header = reader.fieldnames or []
+                self.rows = [(i, row) for i, row in enumerate(reader, start=2)]   # 1행은 머리글
+        except (csv.Error, UnicodeDecodeError) as exc:
+            raise ValueError(f"{path.name}을 CSV로 읽을 수 없다 (인코딩 {mapping['encoding']}): {exc}") from None
+        missing = [c for c in self.columns.values() if c not in header]
+        if missing:
+            raise ValueError(f"{path.name}에 컬럼 {', '.join(missing)}이 없다 (매핑 명세 {part}.columns 확인)")
+        self.ignored = [c for c in header if c not in self.columns.values()]
 
     def report(self, line: int, row: dict, field: str, problem: str, action: str = "행 제외") -> None:
         id_column = self.columns.get("id") or self.columns.get("order")

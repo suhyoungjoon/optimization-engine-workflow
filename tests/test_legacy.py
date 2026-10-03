@@ -262,3 +262,13 @@ def test_cli_export_import_datasets(data, tmp_path, capsys):
     assert "cli_demo" in text and "제외 0" in text and "가져오지 않은 컬럼" in text
     assert main(["datasets"]) == 0 and "cli_demo" in capsys.readouterr().out
     assert main(["import-legacy", "--input", str(tmp_path / "nowhere"), "--name", "x"]) == 2
+
+
+def test_unreadable_csv_is_a_clear_error(exported, data, tmp_path):
+    src = tmp_path / "broken"
+    shutil.copytree(exported[0], src)
+    rows = _rows(src / "orders.csv")
+    rows[0]["고객명"] = "x" * (csv.field_size_limit() + 1)          # CSV 파서가 읽지 못하는 파일
+    _write(src / "orders.csv", rows)
+    with pytest.raises(ValueError, match="orders.csv"):
+        import_legacy(src, MAPPING, "broken")
