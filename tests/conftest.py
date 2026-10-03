@@ -39,6 +39,12 @@ def ws(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_data_dir(tmp_path, monkeypatch):
+    """테스트는 레포의 data/(레거시 데이터셋)를 쓰지 않는다."""
+    monkeypatch.setenv("OEW_DATA_DIR", str(tmp_path / "data"))
+
+
+@pytest.fixture(autouse=True)
 def _no_solver_disk_cache(monkeypatch):
     """테스트는 runs/solver_cache를 쓰지 않는다 (디스크 캐시 테스트만 임시 폴더로 켠다)."""
     monkeypatch.setenv("SOLVER_CACHE_DIR", "")

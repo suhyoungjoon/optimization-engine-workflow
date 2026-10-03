@@ -10,7 +10,7 @@ from pathlib import Path
 from engines.base import Engine
 from modelreg import Registry
 
-from .scenarios import load_set, make_instance
+from .scenarios import case_label, load_set, make_instance
 
 
 def warm(engine: Engine, *, models_dir: str | Path, set_paths: list[str | Path], progress=None) -> dict:
@@ -25,10 +25,10 @@ def warm(engine: Engine, *, models_dir: str | Path, set_paths: list[str | Path],
         for case in s["cases"]:
             started = time.time()
             pack.solve(make_instance(pack, case), params)
-            cases.append({"seed": case["seed"], "seconds": round(time.time() - started, 2)})
+            cases.append({"case": case_label(case), "seconds": round(time.time() - started, 2)})
             done += 1
             if progress:
-                progress(done, total, f"{s['name']} seed {case['seed']}")
+                progress(done, total, f"{s['name']} {case_label(case)}")
         out.append({"name": s["name"], "path": s["path"], "cases": cases})
     return {"model": f"{engine.name}@v{version}", "sets": out,
             "seconds": round(sum(c["seconds"] for s in out for c in s["cases"]), 2)}

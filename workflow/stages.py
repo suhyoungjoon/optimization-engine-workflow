@@ -17,7 +17,7 @@ from engines.base import Engine
 
 from .compare import BudgetExceeded, check_deadline, compare_cases
 from .judge import judge
-from .scenarios import make_instance
+from .scenarios import case_label, make_instance
 from .search import run_search, space_errors
 
 # 3단계 개선안 상태: 검증 대상은 valid뿐이다
@@ -53,7 +53,7 @@ def run_stage(engine: Engine, params: dict, cases: list[dict], progress=_no_prog
         })
         if representative is None:
             representative = (instance, decisions)
-        progress("run", len(rows), len(cases), f"학습용 seed {case['seed']}")
+        progress("run", len(rows), len(cases), f"학습용 {case_label(case)}")
     metrics = [m for m in rows[0]["metrics"] if all(m in r["metrics"] for r in rows)]
     result = {
         "cases": rows,
@@ -204,7 +204,7 @@ def validation_stage(engine: Engine, params: dict, proposals: list[dict], report
             check_deadline(deadline)
             instances[name].append((c, make_instance(pack, c)))
             done += 1
-            progress("validation", done, total, f"시나리오 생성 seed {c['seed']}")
+            progress("validation", done, total, f"시나리오 생성 {case_label(c)}")
     slices = finding_slices(report)
     results = []
     for p in valid:
@@ -214,7 +214,7 @@ def validation_stage(engine: Engine, params: dict, proposals: list[dict], report
             def on_case(case, name=name, pid=p["id"]):
                 nonlocal done
                 done += 1
-                progress("validation", done, total, f"개선안 {pid} {name} seed {case['seed']}")
+                progress("validation", done, total, f"개선안 {pid} {name} {case_label(case)}")
             compared[name] = compare_cases(engine.pack_factory, params, candidate, insts, slices, deadline, on_case)
         verdict = judge(judgment, {name: c["summary"] for name, c in compared.items()})
         results.append({"id": p["id"], "title": p["proposal"].get("title"), **compared, "verdict": verdict,

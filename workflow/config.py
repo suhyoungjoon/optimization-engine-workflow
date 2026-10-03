@@ -108,6 +108,8 @@ def save_set(path: str | Path, cases: list[dict], other_path: str | Path | None,
     path = Path(path)
     ry = YAML()
     doc = ry.load(path.read_text(encoding="utf-8"))
+    if any(isinstance(c, dict) and "dataset" in c for c in list(doc.get("cases") or []) + (cases if isinstance(cases, list) else [])):
+        raise ValueError("기간 케이스(레거시 데이터셋) 세트는 화면에서 고치지 않는다: scenarios/의 파일을 고친다")
     candidate = parse_set({"name": doc.get("name"), "cases": cases}, path)   # 형식이 틀리면 ValueError
     unknown = sorted({f for c in candidate["cases"] for f in c["faults"]} - known_faults)
     if unknown:

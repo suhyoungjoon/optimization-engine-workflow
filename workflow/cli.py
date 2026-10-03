@@ -8,9 +8,15 @@ python -m workflow models [--engine rule]
 python -m workflow rollback [--engine rule] [--to N] --reason ...
 python -m workflow compare-engines [--engines rule,solver] [--set NAME]
 python -m workflow warm --engine solver [--set demo_train --set demo_holdout]
+python -m workflow export-legacy --out DIR [--seed 1 --faults P1,P2,P3,P4 --start 2026-09-01]   # 개발용 가상 레거시 CSV
+python -m workflow import-legacy --input DIR --name NAME [--mapping sources/legacy/mapping.yaml]
+python -m workflow datasets
+python -m workflow compare-engines --set legacy_holdout --baseline legacy
 """
 
 import argparse
+import datetime as dt
+import os
 import sys
 from pathlib import Path
 
@@ -21,12 +27,15 @@ from core.llm.client import load_dotenv
 
 from engines import ENGINES, get_engine
 from modelreg import Registry, RegistryError
+from sources.legacy import ImportRefused, export_legacy, import_legacy, list_datasets
+from sources.legacy.export import DEFAULT_PARAMS, MAPPING
 
 from . import runner
 from .compare_engines import compare_engines, save_comparison
 from .config import for_engine
 from .judge import SET_LABELS
 from .pipeline import stage_labels
+from .scenarios import case_label
 from .storage import RunStore
 from .warm import warm
 
@@ -52,8 +61,10 @@ def _fmt(v) -> str:
 
 
 def _cases(s: dict) -> str:
-    return ", ".join(f"{c['seed']}:{'+'.join(c['faults']) or '-'}{'/' + str(c['items']) + '건' if c.get('items') else ''}"
-                     for c in s.get("cases", []))
+    def one(c: dict) -> str:
+        head = case_label(c) if "dataset" in c else f"{c['seed']}:{'+'.join(c['faults']) or '-'}"
+        return head + (f"/{c['items']}건" if c.get("items") else "")
+    return ", ".join(one(c) for c in s.get("cases", []))
 
 
 def _judged_metrics(judgment: dict) -> list[str]:
@@ -72,7 +83,7 @@ def print_status(store: RunStore, run_id: str) -> None:
     if (r := store.load_stage(run_id, "run")):
         rep = r["representative"]
         print(f"{head['run']}  학습용 {r['summary']['cases']}건, 위반 {r['summary']['violations']}건, "
-              f"대표 케이스 seed {rep['seed']} (분석·개선안 도출에 사용)")
+              f"대표 케이스 {case_label(rep)} (분석·개선안 도출에 사용)")
         print("            평균 " + ", ".join(f"{k}={_fmt(v)}" for k, v in r["summary"]["metrics"].items()))
     if (a := store.load_stage(run_id, "analysis")):
         print(f"{head['analysis']}  발견 {len(a['findings'])}개 (근거 없어 제외 {len(a['dropped'])}개), "
@@ -150,6 +161,25 @@ def print_comparison(result: dict) -> None:
     print("  " + "1회 풀이 시간(초)".ljust(22) + "".join(f"{result['summary'][n]['seconds_mean']:14.2f}" for n in names))
 
 
+def print_import(snap: dict) -> None:
+    r = snap["report"]
+    print(f"데이터셋 {snap['name']} (hash {snap['hash']}): 기간 {snap['period'][0]} ~ {snap['period'][1]}")
+    labels = {"orders": "지시서", "workers": "작업자", "assignments": "배정"}
+    for part, label in labels.items():
+        print(f"  {label} {r['read'][part]}행 → {r['read'][part] - r['excluded'][part]}건 (제외 {r['excluded'][part]})")
+    ignored = {p: cols for p, cols in r["ignored_columns"].items() if cols}
+    if ignored:
+        print("  가져오지 않은 컬럼: " + "; ".join(f"{labels[p]} {', '.join(cols)}" for p, cols in ignored.items()))
+    a = r["actuals"]
+    rate = f"{a['cancel_rate'] * 100:.1f}%" if a["cancel_rate"] is not None else "-"
+    print(f"  실적: 시각 있는 행 {a['with_times']}/{a['rows']}, 취소율 {rate}, 평균 소요 {a['mean_duration_min']}분 "
+          "(보관만 한다. 판정·비교에 쓰지 않는다)")
+    if r["problems"]:
+        print(f"  문제 {len(r['problems'])}건" + (" (처음 20건)" if len(r["problems"]) > 20 else ""))
+        for p in r["problems"][:20]:
+            print(f"    {labels[p['file']]} {p['line']}행 {p['field']}={p['value']!r}: {p['problem']} → {p['action']}")
+
+
 def _settings(settings_dir: Path) -> dict:
     return yaml.safe_load((settings_dir / "workflow.yaml").read_text(encoding="utf-8"))
 
@@ -158,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="workflow", description="최적화 엔진 개선 워크플로우")
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS)
     parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS)
+    parser.add_argument("--data-dir", type=Path, help="레거시 데이터셋 위치 (기본: 환경변수 OEW_DATA_DIR 또는 data/)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_run = sub.add_parser("run", help="1~4단계 실행 후 승인 대기에서 멈춘다")
@@ -195,6 +226,22 @@ def main(argv: list[str] | None = None) -> int:
     p_cmp.add_argument("--set", help="시나리오 세트 이름 (기본: 마지막 엔진의 기본 검증용 세트)")
     p_cmp.add_argument("--scenarios-dir", type=Path, default=DEFAULT_SCENARIOS)
     p_cmp.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
+    p_cmp.add_argument("--baseline", choices=["legacy"], help="legacy: 과거 실제 배정을 기준으로 (기간 케이스 세트만)")
+
+    p_exp = sub.add_parser("export-legacy", help="개발용 가상 레거시 내보내기(CSV)를 만든다")
+    p_exp.add_argument("--out", type=Path, required=True)
+    p_exp.add_argument("--seed", type=int, default=1)
+    p_exp.add_argument("--faults", default="P1,P2,P3,P4", help="쉼표 구분 (없으면 빈 문자열)")
+    p_exp.add_argument("--start", type=dt.date.fromisoformat, default=dt.date(2026, 9, 1), help="1일차 날짜")
+    p_exp.add_argument("--mapping", type=Path, default=MAPPING)
+    p_exp.add_argument("--params", type=Path, default=DEFAULT_PARAMS, help="가상 레거시 시스템의 규칙 params")
+
+    p_imp = sub.add_parser("import-legacy", help="레거시 내보내기를 매핑 명세로 가져와 데이터셋 스냅샷을 만든다")
+    p_imp.add_argument("--input", type=Path, required=True)
+    p_imp.add_argument("--name", required=True, help="데이터셋 이름 (영문 소문자·숫자·_). 한 번 정하면 내용을 바꾸지 않는다")
+    p_imp.add_argument("--mapping", type=Path, default=MAPPING)
+
+    sub.add_parser("datasets", help="가져온 레거시 데이터셋 목록과 품질 요약")
 
     p_warm = sub.add_parser("warm", help="현재 챔피언으로 세트를 미리 풀어 결과 캐시를 채운다 (실행 기록 없음)")
     p_warm.add_argument("--engine", choices=ENGINES, required=True)
@@ -204,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
     p_warm.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
 
     args = parser.parse_args(argv)
+    if args.data_dir:
+        os.environ["OEW_DATA_DIR"] = str(args.data_dir.resolve())
     if args.cmd == "approve" and args.override_verdict and not args.reason:
         parser.error("--override-verdict에는 --reason이 필요하다")
     store = RunStore(args.runs_dir)
@@ -234,12 +283,40 @@ def main(argv: list[str] | None = None) -> int:
             names = [n for n in args.engines.split(",") if n]
             engines = [get_engine(n) for n in names]
             set_name = args.set or for_engine(_settings(args.settings), names[-1])["scenarios"]["holdout"]
-            result = compare_engines(engines, models_dir=args.models_dir,
-                                     set_path=args.scenarios_dir / f"{set_name}.yaml",
-                                     progress=lambda d, t, msg: print(f"  {d}/{t} {msg}", file=sys.stderr))
+            try:
+                result = compare_engines(engines, models_dir=args.models_dir, baseline=args.baseline,
+                                         set_path=args.scenarios_dir / f"{set_name}.yaml",
+                                         progress=lambda d, t, msg: print(f"  {d}/{t} {msg}", file=sys.stderr))
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"오류: {exc}", file=sys.stderr)
+                return 2
             cid = save_comparison(args.runs_dir, result)
             print_comparison(result)
             print(f"\n저장: {args.runs_dir / 'comparisons' / (cid + '.json')}")
+            return 0
+        if args.cmd == "export-legacy":
+            params = yaml.safe_load(args.params.read_text(encoding="utf-8"))
+            faults = [f for f in args.faults.split(",") if f]
+            out = export_legacy(args.out, seed=args.seed, faults=faults, start=args.start, params=params,
+                                mapping_path=args.mapping)
+            print(f"가상 레거시 내보내기: {args.out} (지시서 {out['orders']}, 작업자 {out['workers']}, "
+                  f"배정 {out['assigned']}, 수동 변경 {out['manual_overrides']}), 기간 {out['period'][0]} ~ {out['period'][1]}")
+            return 0
+        if args.cmd == "import-legacy":
+            try:
+                print_import(import_legacy(args.input, args.mapping, args.name))
+            except (FileNotFoundError, ValueError, ImportRefused) as exc:
+                print(f"오류: {exc}", file=sys.stderr)
+                return 2
+            return 0
+        if args.cmd == "datasets":
+            rows = list_datasets()
+            for d in rows:
+                print(f"{d['name']}  hash {d['hash']}  {d['period'][0]} ~ {d['period'][1]}  지시서 {d['orders']}  "
+                      f"작업자 {d['workers']}  배정 {d['assignments']}  제외 {sum(d['excluded'].values())}  "
+                      f"문제 {d['problems']}  가져온 시각 {d['imported_at']}")
+            if not rows:
+                print("가져온 데이터셋이 없다. python -m workflow import-legacy로 가져온다")
             return 0
         if args.cmd == "warm":
             engine = get_engine(args.engine)
@@ -256,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(f"{result['model']} 결과를 미리 풀었다 ({result['seconds']:.1f}초)")
             for s in result["sets"]:
-                print(f"  {s['name']}: {len(s['cases'])}건  " + ", ".join(f"seed {c['seed']} {c['seconds']:.1f}초"
+                print(f"  {s['name']}: {len(s['cases'])}건  " + ", ".join(f"{c['case']} {c['seconds']:.1f}초"
                                                                        for c in s["cases"]))
             return 0
         if args.cmd == "rollback":

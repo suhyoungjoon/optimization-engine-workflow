@@ -1,0 +1,5 @@
+# 검증용 기간 세트 (M6): 레거시 데이터셋 legacy_demo의 뒤 기간. 판정에만 쓴다. 만드는 방법은 legacy_train.yaml.
+name: legacy_holdout
+cases:
+  - {dataset: legacy_demo, from: "2026-09-06", to: "2026-09-08"}
+  - {dataset: legacy_demo, from: "2026-09-09", to: "2026-09-10"}
