@@ -1,0 +1,44 @@
+# 레거시 필드 매핑 명세: 레거시 내보내기(CSV)의 컬럼·코드를 코어 dispatch 도메인의 필드·코드로 옮긴다.
+# 이 파일은 개발용 가상 레거시 형식(python -m workflow export-legacy)에 맞춰 있다.
+# 실제 레거시 데이터가 오면 이 파일을 복사해 컬럼 이름과 코드 표만 고친다. 코드는 코어 dimensions.yaml의 값으로만 옮길 수 있다
+# (지점 A/B/C, 매체 HFC/FTTx/CATV 등). 더 많은 지점·매체가 필요하면 코어 수정이 필요하다 (docs/plan.md M6).
+# 여기 적지 않은 컬럼(고객명, 전화번호, 주소 원문 등)은 읽지 않는다.
+
+encoding: utf-8-sig
+date_format: "%Y-%m-%d"
+time_format: "%H:%M"
+list_separator: ";"              # 한 칸에 여러 값 (보유기술, 자격)
+
+region:
+  geojson: core:geo/gangnam3.geojson   # core: 접두는 코어 dispatch 팩의 파일. 아니면 이 파일 기준 상대경로 또는 절대경로
+  branches: {A: 서초, B: 강남, C: 송파}  # 코어 지점 코드 → 표시 이름 (GeoJSON의 properties.branch로 경계를 찾는다)
+boundary_zone_km: 1
+max_outside_km: 5                # 지시서 좌표가 소속 관할에서 이보다 멀면 지오코딩 오류로 보고 행을 뺀다
+
+files:
+  orders: orders.csv
+  workers: workers.csv
+  assignments: assignments.csv
+
+orders:
+  columns: {id: 지시번호, date: 작업일자, branch: 지점, work_type: 작업구분, media: 매체, difficulty: 난이도,
+            building_type: 건물유형, desired: 희망시각, lat: 위도, lon: 경도}
+  codes:
+    branch: {서초: A, 강남: B, 송파: C}
+    work_type: {개통: install, 장애: repair}
+    media: {HFC: HFC, 광: FTTx, CATV: CATV}
+    difficulty: {일반: none, 승주: pole, 옥외: outdoor, 고위험: high_risk}
+    building_type: {주택: house, 아파트: apartment}
+
+workers:
+  columns: {id: 사번, branch: 소속지점, skills: 보유기술, certs: 자격, cei: CEI점수, lat: 거점위도, lon: 거점경도,
+            start: 근무시작, end: 근무종료}
+  codes:
+    branch: {서초: A, 강남: B, 송파: C}
+    skills: {HFC: HFC, 광: FTTx, CATV: CATV}
+    certs: {승주: pole, 고위험: high_risk}
+
+assignments:                     # 과거 실제 배정 (레거시 기준선)과 실적. 실적은 보관만 하고 판정에 쓰지 않는다
+  columns: {order: 지시번호, worker: 배정기사, start: 배정시각, arrival: 실제도착, end: 실제완료, cancelled: 취소여부}
+  codes:
+    cancelled: {Y: true, N: false}
