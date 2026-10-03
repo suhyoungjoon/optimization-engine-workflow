@@ -10,8 +10,8 @@ inputs:                          # 워크플로우 밖에서 들어오는 것
     link: "#/models"
   - key: scenarios
     label: 시나리오 세트
-    detail: 학습용·검증용 {seed, 결함} 케이스
-    source: scenarios/train.yaml, scenarios/holdout.yaml
+    detail: 학습용·검증용 케이스. 가상 {seed, 결함} 또는 레거시 데이터셋의 과거 기간 {dataset, from, to}
+    source: scenarios/*.yaml, data/legacy/ (레거시 데이터셋 스냅샷)
     link: "#/settings"
   - key: llm
     label: LLM

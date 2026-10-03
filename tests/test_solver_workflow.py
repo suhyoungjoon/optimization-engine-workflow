@@ -75,7 +75,7 @@ def test_warm_fills_the_disk_cache_for_the_champion(ws, tmp_path, monkeypatch):
     sset = write_set(tmp_path / "w_train.yaml", "w_train", [(1, P1_P4), (2, P1_P4)])
     engine = get_engine("solver")
     result = warm(engine, models_dir=ws["models"], set_paths=[sset])
-    assert result["model"] == "solver@v1" and [c["seed"] for c in result["sets"][0]["cases"]] == [1, 2]
+    assert result["model"] == "solver@v1" and [c["case"] for c in result["sets"][0]["cases"]] == ["seed 1", "seed 2"]
     assert len(list((tmp_path / "cache").glob("*.json"))) == 2
     clear_cache()                                               # 다음 실행(새 프로세스)과 같다
     monkeypatch.setattr("engines.solver.solve_instance", lambda *a, **k: pytest.fail("캐시를 쓰지 않았다"))

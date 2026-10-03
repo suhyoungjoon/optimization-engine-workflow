@@ -22,7 +22,7 @@ from . import stages
 from .config import for_engine
 from .compare import BudgetExceeded
 from .judge import check_config
-from .scenarios import check_disjoint, load_set
+from .scenarios import check_disjoint, load_set, pin_cases
 from .search import search_errors
 from .state import ANALYZED, APPLIED, AWAITING_APPROVAL, FAILED, PROPOSED, REJECTED, SEARCHED, VALIDATED
 from .storage import RunStore, now
@@ -87,7 +87,7 @@ def run_workflow(engine: Engine, *, models_dir: str | Path, runs_dir: str | Path
         registry = Registry(models_dir, engine.name)
         champion = registry.champion()
         params = engine.load_params(registry.params_path(champion))
-        sets = {"train": load_set(train_path), "holdout": load_set(holdout_path)}
+        sets = {"train": pin_cases(load_set(train_path)), "holdout": pin_cases(load_set(holdout_path))}
         check_disjoint(sets["train"], sets["holdout"])
         settings = for_engine(settings, engine.name)   # 엔진별 예외(검증 예산 등)를 덮어쓴다
         analyze_calls, propose_calls = settings["llm"]["analyze_max_calls"], settings["llm"]["propose_max_calls"]
