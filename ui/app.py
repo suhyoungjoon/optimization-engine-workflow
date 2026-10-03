@@ -13,6 +13,7 @@ from core import list_faults, load_config
 
 from engines import ENGINES, get_engine
 from modelreg import Registry, RegistryError
+from sources.legacy import list_datasets, load_snapshot
 from workflow import config, runner
 from workflow.compare_engines import compare_engines, save_comparison
 from workflow.pipeline import default_pipeline
@@ -247,18 +248,29 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
 
     @app.post("/api/comparisons")
     def start_comparison(body: dict = Body(default={})):
+        baseline = body.get("baseline") or None
+        if baseline not in (None, "legacy"):
+            raise HTTPException(400, "baseline은 legacy만 쓸 수 있다")
         names = body.get("engines") or list(ENGINES)
         if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
             raise HTTPException(400, "engines는 엔진 이름 목록이어야 한다")
         engines = [engine_or_404(n) for n in names]
         path = set_path(body.get("set") or engine_settings(names[-1])["scenarios"]["holdout"])
+        if baseline:
+            from workflow.scenarios import load_set
+            try:
+                cases = load_set(path)["cases"]
+            except ValueError as exc:
+                fail(exc)
+            if not all("dataset" in c for c in cases):
+                raise HTTPException(400, "레거시 기준선은 기간 케이스로만 된 세트에서만 쓸 수 있다")
         with lock:   # 실행과 같은 자리를 쓴다: 무거운 계산은 한 번에 하나
             if active["thread"] is not None and active["thread"].is_alive():
                 raise HTTPException(409, "다른 실행·비교가 진행 중이다. 끝난 뒤 다시 시작한다")
 
             def target():
                 try:
-                    result = compare_engines(engines, models_dir=models_dir, set_path=path,
+                    result = compare_engines(engines, models_dir=models_dir, set_path=path, baseline=baseline,
                                              progress=lambda d, t, m: comparing.update(progress={"done": d, "total": t, "detail": m}))
                     save_comparison(runs_dir, result)
                 except Exception as exc:   # 백그라운드 실패를 화면에 알린다 (다음 비교를 시작하면 지운다)
@@ -271,6 +283,20 @@ def create_app(*, runs_dir: Path = ROOT / "runs", models_dir: Path = ROOT / "mod
             active["thread"] = threading.Thread(target=target, daemon=True)
             active["thread"].start()
         return {"started": True}
+
+    # --- 레거시 데이터셋 (읽기 전용: 가져오기는 CLI import-legacy) ---
+
+    @app.get("/api/datasets")
+    def datasets():
+        return {"items": list_datasets()}
+
+    @app.get("/api/datasets/{name}")
+    def dataset_report(name: str):
+        try:
+            snap = load_snapshot(name)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return {k: snap[k] for k in ("name", "hash", "period", "imported_at", "source", "report")}
 
     # --- 기준정보 ---
 

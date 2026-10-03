@@ -86,6 +86,10 @@ const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString("ko-KR", { hour12: 
 const shortDate = (iso) => (iso ? new Date(iso).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "");
 const shortTime = (iso) => (iso ? new Date(iso).toLocaleTimeString("ko-KR", { hour12: false }) : "");
 const fmtJSON = (v) => (typeof v === "string" ? v : JSON.stringify(v));
+// 시나리오 케이스: 가상 {seed, faults} 또는 기간 {dataset, from, to} (레거시 데이터셋, M6)
+const caseLabel = (c) => (c.dataset ? `${c.dataset} ${c.from}~${c.to.slice(5)}` : `seed ${c.seed}`);
+const caseFaults = (c) => (c.dataset ? "레거시 데이터" : c.faults.join("+") || "결함 없음");
+const isPeriodSet = (set) => set.cases.some((c) => c.dataset);
 const statusBadge = (status) => {
   const [label, cls] = STATUS[status] || [status, "outline"];
   return h("span", { class: `badge ${cls}` }, h("span", { class: "dot" }), label);
@@ -178,10 +182,10 @@ async function runsPage() {
   const setInfo = (name) => {
     const set = scenarios[name];
     if (!set) return h("div", { class: "error-box" }, `시나리오 세트 ${name}가 없다`);
-    const combos = [...new Set(set.cases.map((c) => c.faults.join("+") || "결함 없음"))];
+    const combos = [...new Set(set.cases.map(caseFaults))];
     return h("div", { class: "stack", style: "gap:4px" },
       h("div", {}, h("b", {}, `${set.cases.length}건`), " ",
-        h("span", { class: "muted small" }, `seed ${set.cases.map((c) => c.seed + (c.items ? `(앞 ${c.items}건)` : "")).join(", ")}`)),
+        h("span", { class: "muted small" }, set.cases.map((c) => caseLabel(c) + (c.items ? `(앞 ${c.items}건)` : "")).join(", "))),
       h("div", { class: "chips" }, combos.map((c) => h("span", { class: "chip" }, c))));
   };
   infoBox.train.append(setInfo(pick.train.value));
@@ -245,7 +249,7 @@ async function runPage(runId, stageKey) {
         h("div", { class: "meta" },
           h("span", {}, "모델 ", h("b", {}, run.model || "–")),
           h("span", {}, "LLM ", run.llm.model, run.llm.rehearsal ? " (리허설)" : ""),
-          ["train", "holdout"].map((k) => h("span", { title: (scen[k].cases || []).map((c) => `seed ${c.seed}: ${c.faults.join("+") || "결함 없음"}`).join("\n") },
+          ["train", "holdout"].map((k) => h("span", { title: (scen[k].cases || []).map((c) => `${caseLabel(c)}: ${caseFaults(c)}${c.snapshot ? ` (hash ${c.snapshot})` : ""}`).join("\n") },
             `${SET_LABEL[k]} ${(scen[k].cases || []).length}건`)),
           h("span", { class: "muted" }, fmtTime(run.created_at)))),
       h("span", { class: "spacer" }),
@@ -375,11 +379,11 @@ function runStageView({ stages }) {
         h("div", { style: "font-size:22px; font-weight:650" }, st.summary.violations, " ",
           h("span", { class: `badge ${st.summary.violations ? "bad" : "good"}` }, st.summary.violations ? "✕ 있음" : "✓ 없음")))),
     h("div", { class: "table-wrap" }, h("table", {},
-      h("thead", {}, h("tr", {}, h("th", {}, "seed"), h("th", {}, "결함"), h("th", { class: "num" }, "항목"),
+      h("thead", {}, h("tr", {}, h("th", {}, "케이스"), h("th", {}, "결함"), h("th", { class: "num" }, "항목"),
         metrics.map((m) => h("th", { class: "num" }, metricLabel(m))), h("th", { class: "num" }, "위반"))),
       h("tbody", {}, st.cases.map((c, i) => h("tr", {},
-        h("td", {}, c.seed, i === 0 ? h("span", { class: "badge info", style: "margin-left:6px" }, "대표") : null),
-        h("td", {}, h("span", { class: "chips" }, c.faults.length ? c.faults.map((f) => h("span", { class: "chip" }, f)) : h("span", { class: "muted" }, "없음"))),
+        h("td", {}, caseLabel(c), i === 0 ? h("span", { class: "badge info", style: "margin-left:6px" }, "대표") : null),
+        h("td", {}, c.dataset ? h("span", { class: "muted", style: "white-space:nowrap" }, "레거시 데이터") : h("span", { class: "chips" }, c.faults.length ? c.faults.map((f) => h("span", { class: "chip" }, f)) : h("span", { class: "muted" }, "없음"))),
         h("td", { class: "num" }, c.items),
         metrics.map((m) => h("td", { class: "num" }, fmtValue(m, c.metrics[m]))),
         h("td", { class: "num" }, c.violations)))))));
@@ -607,7 +611,7 @@ function validationView({ run, stages }) {
 // 케이스별 Δ 점 그래프 (학습용 채운 원, 검증용 빈 원). 0선과 판정 기준선.
 function stripPlot(r, metric, judgment) {
   const W = 320, H = 118, L = 12, R = 12, rowY = { train: 44, holdout: 80 };
-  const pts = ["train", "holdout"].flatMap((k) => r[k].cases.map((c) => ({ set: k, seed: c.seed, faults: c.faults,
+  const pts = ["train", "holdout"].flatMap((k) => r[k].cases.map((c) => ({ set: k, label: caseLabel(c), faults: caseFaults(c),
     d: c.after[metric] - c.before[metric], before: c.before[metric], after: c.after[metric] })));
   let limit = null;
   if (metric === judgment.target.metric) limit = { v: judgment.target.min_improvement, label: "최소 개선" };
@@ -637,7 +641,7 @@ function stripPlot(r, metric, judgment) {
       stroke: k === "train" ? "var(--series-1)" : "var(--series-2)", "stroke-width": 2, "stroke-linecap": "round" })),
     pts.map((p) => {
       const color = p.set === "train" ? "var(--series-1)" : "var(--series-2)";
-      const text = `${SET_LABEL[p.set]} seed ${p.seed} (${p.faults.join("+") || "결함 없음"})\n${fmtValue(metric, p.before)} → ${fmtValue(metric, p.after)}  Δ ${fmtDelta(metric, p.d)}`;
+      const text = `${SET_LABEL[p.set]} ${p.label} (${p.faults})\n${fmtValue(metric, p.before)} → ${fmtValue(metric, p.after)}  Δ ${fmtDelta(metric, p.d)}`;
       return s("g", { onmousemove: (e) => show(e, text), onmouseleave: hide },
         s("circle", { cx: x(p.d), cy: rowY[p.set], r: 11, fill: "transparent" }),
         s("circle", { cx: x(p.d), cy: rowY[p.set], r: 4.5, fill: p.set === "train" ? color : "var(--surface)", stroke: p.set === "train" ? "var(--surface)" : color, "stroke-width": 2 }));
@@ -884,7 +888,7 @@ function diffTable(rows, a, b) {
 
 async function settingsPage() {
   const engine = enginePref();
-  const [settings, scenarios, models] = await Promise.all([api("/api/settings"), api("/api/scenarios"), api(`/api/models/${engine}`)]);
+  const [settings, scenarios, models, datasets] = await Promise.all([api("/api/settings"), api("/api/scenarios"), api(`/api/models/${engine}`), api("/api/datasets")]);
   const champ = await api(`/api/models/${engine}/versions/${models.champion}`);
   app.replaceChildren(
     h("div", { class: "row", style: "margin-bottom:6px" }, h("h1", {}, "기준정보")),
@@ -894,7 +898,43 @@ async function settingsPage() {
       limitsCard(settings.values, Object.keys(scenarios)),
       h("div", { class: "grid-2", style: "grid-template-columns: repeat(auto-fit, minmax(440px, 1fr))" },
         setOrder(Object.keys(scenarios)).map((n) => scenarioCard(n, scenarios))),
+      datasetsCard(datasets.items),
       paramsCard(champ, engine)));
+}
+
+const PART_LABEL = { orders: "지시서", workers: "작업자", assignments: "배정" };
+
+function datasetsCard(items) {
+  const detail = h("div");
+  const show = async (name) => {
+    const d = await api(`/api/datasets/${name}`);
+    const r = d.report;
+    const ignored = Object.entries(r.ignored_columns).filter(([, cols]) => cols.length);
+    detail.replaceChildren(h("div", { class: "stack", style: "margin-top:12px" },
+      h("div", { class: "row small" }, h("b", { class: "mono" }, d.name), h("span", { class: "muted" }, `hash ${d.hash} · ${d.period[0]} ~ ${d.period[1]} · 가져온 시각 ${fmtTime(d.imported_at)}`)),
+      h("div", { class: "small muted" }, `원본 ${d.source.input} · 매핑 명세 ${d.source.mapping.path}`),
+      ignored.length ? h("div", { class: "note-box" }, "가져오지 않은 컬럼 (개인정보 등): ", ignored.map(([p, cols]) => `${PART_LABEL[p]} ${cols.join(", ")}`).join(" · ")) : null,
+      h("div", { class: "small ink-2" }, `실적: 시각 있는 행 ${r.actuals.with_times}/${r.actuals.rows} · 취소율 ${r.actuals.cancel_rate == null ? "–" : (r.actuals.cancel_rate * 100).toFixed(1) + "%"} · 평균 소요 ${r.actuals.mean_duration_min ?? "–"}분. ${r.actuals.note}`),
+      r.problems.length
+        ? h("div", { class: "table-wrap" }, h("table", {},
+            h("thead", {}, h("tr", {}, ["파일", "행", "ID", "필드", "값", "문제", "처리"].map((t) => h("th", {}, t)))),
+            h("tbody", {}, r.problems.slice(0, 200).map((p) => h("tr", {}, h("td", {}, PART_LABEL[p.file]), h("td", { class: "num" }, p.line),
+              h("td", { class: "mono" }, p.id ?? "–"), h("td", { class: "mono" }, p.field), h("td", { class: "mono" }, p.value ?? "–"),
+              h("td", { class: "small" }, p.problem), h("td", {}, h("span", { class: `badge ${p.action === "행 제외" ? "bad" : "warn"}` }, p.action)))))))
+        : h("div", { class: "small" }, h("span", { class: "badge good" }, "✓ 문제 없음"), " 모든 행을 가져왔다.")));
+  };
+  return h("section", { class: "card" },
+    h("div", { class: "card-head" }, h("h2", {}, "레거시 데이터셋"), h("span", { class: "badge outline" }, "읽기 전용"),
+      h("span", { class: "small muted" }, "가져오기는 CLI: python -m workflow import-legacy --input DIR --name NAME (매핑 명세 sources/legacy/mapping.yaml)")),
+    items.length
+      ? h("div", { class: "table-wrap" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["이름", "기간", "지시서", "작업자", "배정", "제외", "문제", ""].map((t) => h("th", {}, t)))),
+          h("tbody", {}, items.map((d) => h("tr", {}, h("td", { class: "mono" }, d.name), h("td", {}, `${d.period[0]} ~ ${d.period[1]}`),
+            h("td", { class: "num" }, d.orders), h("td", { class: "num" }, d.workers), h("td", { class: "num" }, d.assignments),
+            h("td", { class: "num" }, Object.values(d.excluded).reduce((a, b) => a + b, 0)), h("td", { class: "num" }, d.problems),
+            h("td", {}, h("button", { class: "small", onclick: () => show(d.name) }, "품질 리포트")))))))
+      : h("div", { class: "empty" }, "가져온 데이터셋이 없다. 개발용: python -m workflow export-legacy --out runs/legacy_export → import-legacy --input runs/legacy_export --name legacy_demo"),
+    detail);
 }
 
 function saveRow(onSave) {
@@ -1004,8 +1044,20 @@ function limitsCard(values, setNames) {
     }));
 }
 
+function periodSetCard(name, set) {
+  return h("section", { class: "card" },
+    h("div", { class: "card-head" }, h("h2", {}, setTitle(name)), h("span", { class: "badge outline" }, `${set.cases.length}건`), h("span", { class: "badge info" }, "기간 세트")),
+    h("div", { class: "small muted", style: "margin-bottom:8px" },
+      setKind(name) === "train" ? "레거시 데이터셋의 앞 기간. 검증용 기간보다 앞서야 한다 (미래 정보 금지)." : "레거시 데이터셋의 뒤 기간. 판정에만 쓴다.",
+      set.partner ? ` 짝: ${set.partner}.` : "", " 화면에서 고치지 않는다: scenarios/의 파일을 고친다."),
+    h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "데이터셋"), h("th", {}, "기간"), h("th", { class: "num" }, "앞 N건"))),
+      h("tbody", {}, set.cases.map((c) => h("tr", {}, h("td", { class: "mono" }, c.dataset || `seed ${c.seed}`),
+        h("td", {}, c.dataset ? `${c.from} ~ ${c.to}` : caseFaults(c)), h("td", { class: "num muted" }, c.items || "전체"))))));
+}
+
 function scenarioCard(name, scenarios) {
   const set = scenarios[name];
+  if (isPeriodSet(set)) return periodSetCard(name, set);
   const tbody = h("tbody");
   const addRow = (seed, faults) => {
     const toggles = META.faults.map((f) => {
@@ -1284,14 +1336,24 @@ function comparisonsCard() {
     const [data, scenarios] = await Promise.all([api("/api/comparisons"), api("/api/scenarios")]);
     const setSel = h("select", {}, Object.keys(scenarios).filter((n) => setKind(n) === "holdout").map((n) =>
       h("option", { value: n, selected: n === META.engine_scenarios[META.engines.at(-1)].holdout }, n)));
+    const legacyBox = h("input", { type: "checkbox" });
+    const legacyLabel = h("label", { class: "row small", style: "gap:4px", title: "기간 세트에서 과거 실제 배정을 같은 validate()·metrics()로 재어 기준으로 둔다" }, legacyBox, "레거시 기준선");
+    const syncLegacy = () => {
+      const ok = scenarios[setSel.value] && isPeriodSet(scenarios[setSel.value]);
+      legacyBox.disabled = !ok;
+      legacyBox.checked = ok && legacyBox.checked;
+      legacyLabel.style.opacity = ok ? 1 : 0.5;
+    };
+    setSel.addEventListener("change", syncLegacy);
+    syncLegacy();
     const start = h("button", { class: "small", disabled: !!data.running, onclick: async () => {
-      try { await post("/api/comparisons", { engines: META.engines, set: setSel.value }); draw(); }
+      try { await post("/api/comparisons", { engines: META.engines, set: setSel.value, baseline: legacyBox.checked ? "legacy" : null }); draw(); }
       catch (e) { toast(e.message, true); }
     } }, "비교 실행");
     const latest = data.items[0];
     box.replaceChildren(...[
       h("div", { class: "card-head" }, h("h2", {}, "엔진 간 비교"), h("span", { class: "badge outline" }, "정보용 · 판정·승인과 무관"),
-        h("span", { class: "spacer" }), setSel, start),
+        h("span", { class: "spacer" }), setSel, legacyLabel, start),
       h("p", { class: "small ink-2", style: "margin:0 0 10px" }, "엔진마다 현재 챔피언을 같은 시나리오 세트의 같은 인스턴스로 풀어 비교한다. 필수조건은 모두 도메인 팩의 validate()로 센다."),
       data.running ? h("div", { class: "row small" }, h("span", { class: "spinner" }), `${data.running.detail} (${data.running.done}/${data.running.total})`) : null,
       data.error ? h("div", { class: "error-box", style: "margin-bottom:10px" }, `마지막 비교 실패: ${data.error}`) : null,
@@ -1306,7 +1368,7 @@ function comparisonTable(c) {
   const names = c.engines, base = c.base;
   const metrics = Object.keys(c.summary[base].metrics);
   return h("div", {},
-    h("div", { class: "small muted", style: "margin-bottom:6px" }, `${c.set.name} ${c.cases.length}건 · ${fmtTime(c.at)} · 기준 ${base}`),
+    h("div", { class: "small muted", style: "margin-bottom:6px" }, `${c.set.name} ${c.cases.length}건 · ${fmtTime(c.at)} · 기준 ${c.summary[base].model}`),
     h("div", { class: "table-wrap" }, h("table", {},
       h("thead", {}, h("tr", {}, h("th", {}, "지표 (세트 평균)"), names.map((n) => h("th", { class: "num" }, c.summary[n].model)),
         names.slice(1).map((n) => h("th", { class: "num" }, `${n} − ${base}`)))),
@@ -1315,5 +1377,5 @@ function comparisonTable(c) {
           names.slice(1).map((n) => { const d = c.summary[n][`delta_vs_${base}`][m]; return h("td", { class: `num ${deltaClass(m, d)}` }, fmtDelta(m, d)); }))),
         h("tr", {}, h("td", {}, "필수조건 위반 (합계)"), names.map((n) => h("td", { class: "num" },
           h("span", { class: `check ${c.summary[n].violations ? "no" : "ok"}` }, c.summary[n].violations ? "✕ " : "✓ "), c.summary[n].violations)), names.slice(1).map(() => h("td"))),
-        h("tr", {}, h("td", {}, "1회 풀이 시간(초)"), names.map((n) => h("td", { class: "num" }, c.summary[n].seconds_mean.toFixed(2))), names.slice(1).map(() => h("td")))))));
+        h("tr", {}, h("td", {}, "1회 풀이 시간(초)"), names.map((n) => h("td", { class: "num" }, n === "legacy" ? "–" : c.summary[n].seconds_mean.toFixed(2))), names.slice(1).map(() => h("td")))))));
 }

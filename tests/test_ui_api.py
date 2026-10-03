@@ -214,3 +214,34 @@ def test_failed_comparison_is_reported(ui):
             break
         time.sleep(0.05)
     assert "cases가 비어 있다" in data["error"] and data["items"] == []
+
+
+def test_legacy_datasets_and_period_sets(ui, tmp_path):
+    import datetime as dt
+
+    from sources.legacy import export_legacy, import_legacy
+    client, tmp, _ = ui
+    params = yaml.safe_load((ROOT / "models" / "rule" / "v1" / "params.yaml").read_text(encoding="utf-8"))
+    export_legacy(tmp_path / "export", seed=1, faults=[], start=dt.date(2026, 9, 1), params=params)
+    import_legacy(tmp_path / "export", ROOT / "sources" / "legacy" / "mapping.yaml", "demo")
+    for name, period in (("legacy_train", ("2026-09-01", "2026-09-02")), ("legacy_holdout", ("2026-09-03", "2026-09-04"))):
+        (tmp / "scenarios" / f"{name}.yaml").write_text(yaml.safe_dump(
+            {"name": name, "cases": [{"dataset": "demo", "from": period[0], "to": period[1]}]}), encoding="utf-8")
+
+    listed = client.get("/api/datasets").json()["items"]
+    assert [d["name"] for d in listed] == ["demo"] and listed[0]["excluded"]["orders"] == 0
+    report = client.get("/api/datasets/demo").json()
+    assert report["report"]["ignored_columns"]["orders"] == ["고객명", "연락처"]
+    assert client.get("/api/datasets/nope").status_code == 404 and client.get("/api/datasets/Bad!").status_code == 404
+    sets = client.get("/api/scenarios").json()
+    assert sets["legacy_train"]["partner"] == "legacy_holdout" and sets["legacy_train"]["cases"][0]["dataset"] == "demo"
+    assert client.put("/api/scenarios/legacy_train", json={"cases": [{"seed": 1, "faults": []}]}).status_code == 400
+    assert client.post("/api/comparisons", json={"engines": ["rule"], "set": "holdout", "baseline": "legacy"}).status_code == 400
+    assert client.post("/api/comparisons", json={"engines": ["rule"], "set": "legacy_holdout", "baseline": "x"}).status_code == 400
+    assert client.post("/api/comparisons", json={"engines": ["rule"], "set": "legacy_holdout", "baseline": "legacy"}).status_code == 200
+    for _ in range(200):
+        data = client.get("/api/comparisons").json()
+        if data["items"] and not data["running"]:
+            break
+        time.sleep(0.05)
+    assert data["items"][0]["base"] == "legacy" and data["items"][0]["engines"] == ["legacy", "rule"]
