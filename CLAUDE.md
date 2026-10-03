@@ -27,15 +27,17 @@
 
 ```
 workflow/        워크플로우 상태 머신, 단계(stage) 구현, CLI, 워크플로우 정의(pipeline.yaml: 화면 다이어그램의 기준)
+sources/         데이터 원천 (legacy: 레거시 내보내기 CSV → 매핑 명세 → 데이터셋 스냅샷, 레거시 기준선. M6)
 engines/         엔진 어댑터 (rule: 코어 규칙 엔진 래핑, solver: OR-Tools CP-SAT. 코어 팩에서 solve만 바꾼다)
 modelreg/        모델 레지스트리: 버전별 params 스냅샷, 모델 카드, 챔피언 지정, 되돌리기
-scenarios/       시나리오 세트 정의 (학습용·검증용 seed·결함 조합, …train ↔ …holdout 짝. 엔진별 기본 세트는 settings)
+scenarios/       시나리오 세트 정의 (학습용·검증용 seed·결함 조합 또는 레거시 기간, …train ↔ …holdout 짝. 엔진별 기본 세트는 settings)
 settings/        workflow.yaml(상한·판정 기준·기본 세트, engines.<엔진>으로 엔진별 예외), llm.yaml
 models/          레지스트리 데이터 (엔진별 버전 디렉터리)
 ui/              워크플로우 화면 (M3): FastAPI(app.py) + 빌드 없는 단일 페이지(static/)
 tests/           pytest (fake_llm.py는 코어 레포 tests/에서 복사)
 docs/            plan.md, handoff.md(사본), extensibility.md(단계·agent 확장 방향, 미구현)
 runs/            실행 결과·DB·LLM 캐시 (git 제외)
+data/            레거시 데이터셋 스냅샷 (git 제외, OEW_DATA_DIR로 위치 변경)
 ```
 
 ## 워크플로우 단계와 주체
@@ -63,6 +65,7 @@ Python 3.11+, 코어 패키지(`optimization-agent-harness`), PyYAML, pytest. LL
 - solver는 결정성을 지킨다: 단일 스레드·고정 seed·결정적 시간 한도(`objective.time_limit`). 문제끼리는 독립이라 병렬로 풀어도 결과가 같다(`SOLVER_THREADS`로 스레드 수 조정).
   결정적이라 풀이 결과를 `runs/solver_cache/`에 저장해 다시 쓴다(키: 인스턴스·params·`engines/solver/model.py`·OR-Tools 버전, `SOLVER_CACHE_DIR=`로 끔, `warm`으로 미리 채움). 새 개선안의 풀이는 매번 새로 계산한다. 시연용 세트(`demo_*`)는 케이스마다 `items`로 앞 N건만 쓴다.
 - 탐색(`workflow/search.py`)은 결정적이다: 고정 seed의 Halton 표본 + 가장 좋은 점 주변 재탐색. 점수는 판정 규칙을 쓰되 부작용 한도는 `search.guard_margin`만큼만 쓴다. 탐색 후보는 `3b_search.json`에 두고, 개선안과 같은 번호 체계로 검증·승인한다.
+- 레거시 데이터(`sources/legacy`): 매핑 명세(`mapping.yaml`)에 적은 컬럼만 읽는다(개인정보 컬럼은 읽지 않음). 문제 행은 줄 번호와 함께 품질 리포트에 남기고 뺀다. 코드는 코어 `dimensions.yaml`의 값으로만 옮길 수 있다(더 필요하면 코어 수정). 데이터셋 이름은 한 번 정하면 내용을 바꾸지 않고, 실행은 스냅샷 hash를 기록한다. 기간 세트는 학습용이 검증용보다 앞서야 한다. 실적(실제 소요·도착·취소)은 보관만 하고 판정에 쓰지 않는다.
 - 커밋 메시지: `[M1] workflow: add run stage` 형식.
 
 ## 명령어
@@ -81,6 +84,11 @@ python -m workflow models [--engine rule]                          # 모델 버�
 python -m workflow rollback [--engine rule] [--to N] --reason ...  # 챔피언 되돌리기 (기본: 부모 버전)
 python -m workflow compare-engines [--engines rule,solver] [--set solver_holdout]   # 엔진별 챔피언 비교 (정보용, 기본 세트: 마지막 엔진의 검증용)
 python -m workflow warm --engine solver [--set demo_train --set demo_holdout]       # 챔피언 풀이를 미리 캐시에 채움 (기본: 엔진별 기본 세트)
+python -m workflow export-legacy --out runs/legacy_export                       # 개발용 가상 레거시 CSV (seed 1, P1~P4, 2026-09-01부터 10일)
+python -m workflow import-legacy --input runs/legacy_export --name legacy_demo  # 매핑 명세로 가져와 data/legacy/legacy_demo.json + 품질 리포트
+python -m workflow datasets                                                      # 가져온 데이터셋 목록
+python -m workflow run --engine rule --rehearsal --train scenarios/legacy_train.yaml --holdout scenarios/legacy_holdout.yaml   # 과거 기간으로 한 바퀴
+python -m workflow compare-engines --set legacy_holdout --baseline legacy          # 레거시 실제 배정 대비 엔진 비교 (정보용)
 python -m ui                                                       # 워크플로우 화면 http://127.0.0.1:8765 (리허설 실행만 허용)
 ```
 레포 루트에서 실행한다 (`--rehearsal`이 `tests/fake_llm.py`를 쓴다). 공통 옵션 `--runs-dir`, `--models-dir`, run 옵션 `--train`, `--holdout`, `--settings`로 경로를 바꾼다.
